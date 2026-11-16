@@ -1,0 +1,28 @@
+{
+  "name": "@soltoolkit/telegram-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A self-hosted Telegram bot for token communities on Solana launchpads: a token card for a pasted address, /trending, and a buy bot that merges busy spells. It reads the launch feed and holds no keys.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rimraf .turbo"
+  },
+  "dependencies": {
+    "@soltoolkit/bot-core": "workspace:^",
+    "grammy": "^1.46.0",
+    "ioredis": "^6.0.0",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

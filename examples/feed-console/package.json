@@ -1,0 +1,20 @@
+{
+  "name": "example-feed-console",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Reads the launch feed on standard input and prints what a community bot would post: a card for each new token and the buys of one token, merged when busy.",
+  "scripts": {
+    "start": "tsx index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@soltoolkit/bot-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

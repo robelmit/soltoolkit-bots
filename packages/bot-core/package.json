@@ -1,0 +1,55 @@
+{
+  "name": "@soltoolkit/bot-core",
+  "version": "0.1.0",
+  "description": "The shared half of a community bot for Solana launchpad tokens: a reader for the launch feed, token cards, trending, a buy bot that merges busy spells, rate limits, stores, and renderers for Telegram and Discord. No bot library inside.",
+  "license": "MIT",
+  "keywords": [
+    "solana",
+    "telegram",
+    "discord",
+    "bot",
+    "buy-bot",
+    "pump.fun",
+    "launchpad"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rimraf dist .turbo"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
