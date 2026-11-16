@@ -25,7 +25,7 @@ launch-feed-solana | pnpm --filter example-feed-console start   # what a bot wou
 
 ## Develop
 
-Node 20 or newer and pnpm.
+Node 22.13 or newer and pnpm, to work on the repository. The published packages run on Node 20 or newer.
 
 ```bash
 pnpm install
