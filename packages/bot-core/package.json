@@ -3,14 +3,21 @@
   "version": "0.1.0",
   "description": "The shared half of a community bot for Solana launchpad tokens: a reader for the launch feed, token cards, trending, a buy bot that merges busy spells, rate limits, stores, and renderers for Telegram and Discord. No bot library inside.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/robelmit/soltoolkit-bots.git",
+    "directory": "packages/bot-core"
+  },
+  "homepage": "https://github.com/robelmit/soltoolkit-bots/tree/main/packages/bot-core#readme",
+  "bugs": {
+    "url": "https://github.com/robelmit/soltoolkit-bots/issues"
+  },
   "keywords": [
     "solana",
-    "telegram",
-    "discord",
-    "bot",
+    "telegram-bot",
+    "discord-bot",
     "buy-bot",
-    "pump.fun",
-    "launchpad"
+    "community"
   ],
   "type": "module",
   "main": "./dist/index.cjs",
