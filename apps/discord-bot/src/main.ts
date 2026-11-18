@@ -78,7 +78,7 @@ async function main(): Promise<void> {
           usd: interaction.options.getNumber('usd'),
           channel: interaction.options.getChannel('channel')?.id ?? null,
         },
-        { source: feed, store, links: config.links, changed: () => engine.invalidate() },
+        { source: feed, store, links: config.links, changed: () => engine.invalidate(), poweredBy: config.poweredBy },
       );
       await interaction.reply({ ...reply.payload, ...(reply.ephemeral ? { flags: MessageFlags.Ephemeral } : {}) });
     } catch (error) {

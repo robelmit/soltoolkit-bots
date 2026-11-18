@@ -51,6 +51,7 @@ The manager commands are declared with the Manage Server permission, and the per
 | `FEED_STREAM_KEY` | `stream:market:solana` | The feed's stream |
 | `STORE_PATH` | `./data/discord.json` | The file the servers' settings are kept in |
 | `BOT_BUTTONS` | `Explorer` → Solscan | Link buttons under cards and buy posts: `Label|https://…{address}`, comma separated, at most five |
+| `BOT_POWERED_BY` | — | A credit line for whoever runs the bot, at the end of `/help` (at most 120 characters), such as `Powered by Example · example.com` |
 | `LINK_TOKEN`, `LINK_WALLET`, `LINK_TX` | Solscan | Link templates with `{address}` or `{tx}` |
 
 A missing or malformed setting stops the bot at start and says which one.

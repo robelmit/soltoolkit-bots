@@ -64,6 +64,8 @@ export interface CommandDeps {
   /** The buy bot's settings changed. */
   readonly changed: () => void;
   readonly now?: () => number;
+  /** A credit line for whoever runs the bot, shown at the end of /help. */
+  readonly poweredBy?: string | null;
 }
 
 const HELP: Line[] = [
@@ -96,7 +98,7 @@ export async function handleCommand(input: CommandInput, deps: CommandDeps): Pro
 
   switch (input.name) {
     case 'help':
-      return quiet(HELP);
+      return quiet(deps.poweredBy ? [...HELP, [deps.poweredBy]] : HELP);
 
     case 'ca': {
       const address = detectAddress(input.address ?? '');

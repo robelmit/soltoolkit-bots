@@ -13,6 +13,8 @@ export interface Config {
   /** The JSON file the groups' settings are kept in. */
   readonly storePath: string;
   readonly links: LinkTemplates;
+  /** A credit line for whoever runs the bot, shown at the end of the welcome and /help. */
+  readonly poweredBy: string | null;
 }
 
 export function readConfig(env: Readonly<Record<string, string | undefined>>): Config {
@@ -46,5 +48,8 @@ export function readConfig(env: Readonly<Record<string, string | undefined>>): C
     ...(buttons !== undefined ? { buttons: parseButtons(buttons) } : {}),
   });
 
-  return { token, feed, storePath: get('STORE_PATH') ?? './data/telegram.json', links };
+  const poweredBy = get('BOT_POWERED_BY') ?? null;
+  if (poweredBy !== null && poweredBy.length > 120) throw new Error('BOT_POWERED_BY is at most 120 characters');
+
+  return { token, feed, storePath: get('STORE_PATH') ?? './data/telegram.json', links, poweredBy };
 }

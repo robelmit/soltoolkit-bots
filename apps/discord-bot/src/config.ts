@@ -19,6 +19,8 @@ export interface Config {
    * application in the Discord developer portal; off by default.
    */
   readonly messageContent: boolean;
+  /** A credit line for whoever runs the bot, shown at the end of /help (`BOT_POWERED_BY`). */
+  readonly poweredBy: string | null;
 }
 
 export function readConfig(env: Readonly<Record<string, string | undefined>>): Config {
@@ -57,5 +59,8 @@ export function readConfig(env: Readonly<Record<string, string | undefined>>): C
     ...(buttons !== undefined ? { buttons: parseButtons(buttons) } : {}),
   });
 
-  return { token, applicationId, feed, storePath: get('STORE_PATH') ?? './data/discord.json', links, messageContent: content === '1' };
+  const poweredBy = get('BOT_POWERED_BY') ?? null;
+  if (poweredBy !== null && poweredBy.length > 120) throw new Error('BOT_POWERED_BY is at most 120 characters');
+
+  return { token, applicationId, feed, storePath: get('STORE_PATH') ?? './data/discord.json', links, messageContent: content === '1', poweredBy };
 }

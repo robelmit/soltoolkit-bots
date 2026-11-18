@@ -31,6 +31,17 @@ describe('commands', () => {
     for (const command of COMMANDS) expect(command.description.length).toBeLessThanOrEqual(100);
   });
 
+  it('ends /help with the operator credit line when one is set', async () => {
+    const h = harness();
+    expect(h.text(await h.run('help'))).not.toContain('Powered by');
+    const store = new MemoryStore(() => 0);
+    const credited = await handleCommand(
+      { name: 'help', guildId: GUILD, guildName: 'Server', channelId: '111', userId: '7', canManage: true },
+      { source: new FeedState(), store, links: h.links, changed: () => undefined, poweredBy: 'Powered by Example · example.com' },
+    );
+    expect(credited.payload.embeds?.[0]?.description ?? '').toContain('Powered by Example');
+  });
+
   it('answers /ca with a card and the community\'s buttons, for everyone to see', async () => {
     const h = harness();
     h.list();
@@ -130,7 +141,9 @@ describe('settings', () => {
     expect(config.feed).toEqual({ kind: 'redis', url: 'rediss://cache:6380', key: 'stream:market:solana' });
     expect(config.messageContent).toBe(true);
     expect(config.storePath).toBe('./data/discord.json');
-    expect(readConfig(base)).toMatchObject({ feed: { kind: 'stdin' }, messageContent: false });
+    expect(readConfig(base)).toMatchObject({ feed: { kind: 'stdin' }, messageContent: false, poweredBy: null });
+    expect(readConfig({ ...base, BOT_POWERED_BY: 'Powered by Example' }).poweredBy).toBe('Powered by Example');
+    expect(() => readConfig({ ...base, BOT_POWERED_BY: 'x'.repeat(121) })).toThrow(/120 characters/);
   });
 
   it('stops at start on a setting that is missing or malformed', () => {

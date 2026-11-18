@@ -24,13 +24,13 @@ interface Call {
   payload: Record<string, unknown>;
 }
 
-function harness(options: { refuse?: (call: Call) => GrammyError | null } = {}) {
+function harness(options: { refuse?: (call: Call) => GrammyError | null; poweredBy?: string } = {}) {
   let now = 1_000_000;
   let updateId = 0;
   const feed = new FeedState({ now: () => now });
   const store = new MemoryStore(() => now);
   const links = linkTemplates({ buttons: parseButtons('Chart|https://example.com/c/{address}') });
-  const { bot, engine, outbox } = createBot({ token: TOKEN, source: feed, store, links, botInfo, now: () => now, sleep: async (ms) => void (now += ms) });
+  const { bot, engine, outbox } = createBot({ token: TOKEN, source: feed, store, links, botInfo, now: () => now, sleep: async (ms) => void (now += ms), poweredBy: options.poweredBy ?? null });
   feed.onTrade(engine.onTrade);
   const calls: Call[] = [];
   bot.api.config.use(async (_prev, method, payload) => {
@@ -224,6 +224,15 @@ describe('the buy bot', () => {
     await h.bot.handleUpdate(member('member', 'kicked'));
     expect((await h.store.get(String(GROUP)))!.left).toBe(true);
   });
+
+  it('ends the welcome and /help with the operator credit line when one is set', async () => {
+    const plain = harness();
+    await plain.say('/help');
+    expect(plain.lastText()).not.toContain('Powered by');
+    const credited = harness({ poweredBy: 'Powered by Example · example.com' });
+    await credited.say('/help');
+    expect(credited.lastText()).toContain('Powered by Example');
+  });
 });
 
 describe('the outbox', () => {
@@ -256,7 +265,10 @@ describe('settings', () => {
     expect(config.links.buttons).toEqual([{ label: 'Chart', url: 'https://example.com/{address}' }]);
     expect(config.links.tx).toBe('https://example.com/tx/{tx}');
     expect(config.storePath).toBe('./data/telegram.json');
+    expect(config.poweredBy).toBeNull();
     expect(readConfig({ TELEGRAM_BOT_TOKEN: TOKEN }).feed).toEqual({ kind: 'stdin' });
+    expect(readConfig({ TELEGRAM_BOT_TOKEN: TOKEN, BOT_POWERED_BY: 'Powered by Example' }).poweredBy).toBe('Powered by Example');
+    expect(() => readConfig({ TELEGRAM_BOT_TOKEN: TOKEN, BOT_POWERED_BY: 'x'.repeat(121) })).toThrow(/120 characters/);
   });
 
   it('stops at start on a setting that is missing or malformed', () => {

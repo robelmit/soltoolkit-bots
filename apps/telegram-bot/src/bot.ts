@@ -55,6 +55,8 @@ export interface BotOptions {
   readonly botInfo?: UserFromGetMe;
   readonly limits?: Partial<OutboxLimits>;
   readonly sleep?: (ms: number) => Promise<void>;
+  /** A credit line for whoever runs the bot, shown at the end of the welcome and /help (`BOT_POWERED_BY`). */
+  readonly poweredBy?: string | null;
 }
 
 export interface TelegramBot {
@@ -104,6 +106,7 @@ export function createBot(options: BotOptions): TelegramBot {
   const bot = new Bot(options.token, options.botInfo ? { botInfo: options.botInfo } : {});
   const outbox = new Outbox(bot.api, { limits: options.limits, now, sleep: options.sleep });
   const limiter = new CardLimiter(10, 120_000, now);
+  const help: readonly Line[] = options.poweredBy ? [...HELP, [options.poweredBy]] : HELP;
 
   const engine = new BuyBotEngine({
     store,
@@ -183,7 +186,7 @@ export function createBot(options: BotOptions): TelegramBot {
     await store.upsert(chatKey(ctx), { title: titleOf(ctx), left: false });
     if (was === 'left' || was === 'kicked') {
       log.info('added to group', { chat: chatKey(ctx) });
-      await reply(ctx, HELP).catch((error: unknown) => log.warn('welcome failed', { chat: chatKey(ctx), error: error instanceof Error ? error.message : String(error) }));
+      await reply(ctx, help).catch((error: unknown) => log.warn('welcome failed', { chat: chatKey(ctx), error: error instanceof Error ? error.message : String(error) }));
     }
   });
 
@@ -308,7 +311,7 @@ export function createBot(options: BotOptions): TelegramBot {
     ]);
   });
 
-  bot.command(['help', 'start'], async (ctx) => reply(ctx, HELP));
+  bot.command(['help', 'start'], async (ctx) => reply(ctx, help));
 
   // A pasted address (seen only with privacy mode off, as an admin, or in a private chat). Other text is ignored.
   bot.on('message:text', async (ctx) => {
