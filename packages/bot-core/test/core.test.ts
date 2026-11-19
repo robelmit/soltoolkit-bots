@@ -223,7 +223,7 @@ describe('cards', () => {
       dexPaid: true,
       risk: { ...token.risk, devSold: true },
     };
-    const text = toText(tokenCard(rich, linkTemplates(), 3_601_000, { rank: 4, caller: { name: 'ana', mc: 10_000, at: 1_000 } })).split('\n');
+    const text = toText(tokenCard(rich, linkTemplates(), 3_601_000, { rank: 4, caller: { by: 'ana', mc: 10_000, at: 1_000 } })).split('\n');
     expect(text[0]).toBe('🧪 Zop [new] [40K / -12% 1h] $ZOP/SOL');
     expect(text[1]).toBe('☀️ Solana @ pump.fun · curve 71% · 🔥 #4');
     expect(text[3]).toBe('💎 MC: $40K ⇨ $120K peak [1h]');
@@ -253,7 +253,7 @@ describe('cards', () => {
   it('stays under Telegram\'s 100 formatting entities with every link filled', () => {
     const row = parseLinkRow(Array.from({ length: 10 }, (_, i) => `L${i}|https://example.com/${i}/{address}`).join(','));
     const full = { ...token, socials: { x: 'https://x.com/a', telegram: 'https://t.me/a', website: 'https://a.example' } };
-    const lines = tokenCard(full, linkTemplates({ row }), 61_000, { rank: 1, caller: { name: 'a', mc: 1, at: 1 } });
+    const lines = tokenCard(full, linkTemplates({ row }), 61_000, { rank: 1, caller: { by: 'a', mc: 1, at: 1 } });
     expect(telegramEntities(lines)).toBeLessThan(100);
     expect(telegramEntities(trendingCard(Array.from({ length: 10 }, () => token), linkTemplates()))).toBeLessThan(100);
   });
@@ -331,7 +331,7 @@ describe('stores', () => {
     let now = 10;
     const store = new MemoryStore(() => now);
     expect(await store.get('g')).toBeNull();
-    expect(await store.upsert('g', { title: 'Group' })).toEqual({ id: 'g', title: 'Group', buyBot: null, left: false, updatedAt: 10 });
+    expect(await store.upsert('g', { title: 'Group' })).toEqual({ id: 'g', title: 'Group', buyBot: null, alerts: null, calls: [], left: false, updatedAt: 10 });
     now = 20;
     await store.upsert('g', { buyBot });
     expect((await store.get('g'))!.title).toBe('Group');
@@ -357,7 +357,7 @@ describe('stores', () => {
       const store = await JsonFileStore.open(path, () => 42);
       await Promise.all([store.upsert('a', { title: 'A', buyBot }), store.upsert('b', { title: 'B' })]);
       const again = await JsonFileStore.open(path);
-      expect(await again.get('a')).toEqual({ id: 'a', title: 'A', buyBot, left: false, updatedAt: 42 });
+      expect(await again.get('a')).toEqual({ id: 'a', title: 'A', buyBot, alerts: null, calls: [], left: false, updatedAt: 42 });
       expect((await again.withBuyBot()).map((r) => r.id)).toEqual(['a']);
       expect(JSON.parse(await readFile(path, 'utf8')).version).toBe(1);
 

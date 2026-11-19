@@ -13,6 +13,8 @@ export interface Config {
   readonly feed: { readonly kind: 'stdin' } | { readonly kind: 'redis'; readonly url: string; readonly key: string };
   /** The JSON file the servers' settings are kept in. */
   readonly storePath: string;
+  /** Where the tokens the bot knows are kept across restarts; null when off (`SNAPSHOT_PATH=off`). */
+  readonly snapshotPath: string | null;
   readonly links: LinkTemplates;
   /**
    * Answer a pasted address without a command. It needs the Message Content intent, which is switched on for the
@@ -56,5 +58,6 @@ export function readConfig(env: Readonly<Record<string, string | undefined>>): C
   const poweredBy = get('BOT_POWERED_BY') ?? null;
   if (poweredBy !== null && poweredBy.length > 120) throw new Error('BOT_POWERED_BY is at most 120 characters');
 
-  return { token, applicationId, feed, storePath: get('STORE_PATH') ?? './data/discord.json', links, messageContent: content === '1', poweredBy };
+  const snapshot = get('SNAPSHOT_PATH');
+  return { token, applicationId, feed, storePath: get('STORE_PATH') ?? './data/discord.json', snapshotPath: snapshot?.toLowerCase() === 'off' ? null : (snapshot ?? './data/feed-snapshot.json'), links, messageContent: content === '1', poweredBy };
 }

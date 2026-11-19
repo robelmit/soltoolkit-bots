@@ -30,8 +30,10 @@ function harness(options: { refuse?: (call: Call) => GrammyError | null; powered
   const feed = new FeedState({ now: () => now });
   const store = new MemoryStore(() => now);
   const links = linkTemplates({ buttons: parseButtons('Chart|https://example.com/c/{address}') });
-  const { bot, engine, outbox } = createBot({ token: TOKEN, source: feed, store, links, botInfo, now: () => now, sleep: async (ms) => void (now += ms), poweredBy: options.poweredBy ?? null, cardImage: options.cardImage ?? false });
+  const { bot, engine, alerts, outbox } = createBot({ token: TOKEN, source: feed, store, links, botInfo, now: () => now, sleep: async (ms) => void (now += ms), poweredBy: options.poweredBy ?? null, cardImage: options.cardImage ?? false });
   feed.onTrade(engine.onTrade);
+  feed.onToken(alerts.onToken);
+  feed.onTrade(alerts.onTrade);
   const calls: Call[] = [];
   bot.api.config.use(async (_prev, method, payload) => {
     const call = { method, payload: payload as Record<string, unknown> };
@@ -55,7 +57,7 @@ function harness(options: { refuse?: (call: Call) => GrammyError | null; powered
   const list = (address: string, symbol = 'ZOP'): void => feed.apply({ type: 'token_upsert', ts: now, token: { address, symbol, name: 'Zop', decimals: 6, stage: 'new', launchpad: 'pumpfun', price: 0.000004, mc: 4_000 } });
   const trade = (over: Partial<FeedTrade> = {}): FeedEvent => ({ type: 'market_trade', ts: now, trade: { address: MINT, tx: 'sig', at: now, side: 'buy', amountToken: '5000000', amountNative: '500000000', usd: 100, price: 0.00002, mc: 20_000, maker: 'Maker1111111111111111111111111111111111111', ...over } });
 
-  return { bot, engine, outbox, feed, store, calls, say, sent, lastText, list, trade, tick: (ms: number) => (now += ms), message };
+  return { bot, engine, alerts, outbox, feed, store, calls, say, sent, lastText, list, trade, tick: (ms: number) => (now += ms), message, now: () => now };
 }
 
 describe('token cards', () => {
@@ -293,6 +295,52 @@ describe('the outbox', () => {
   });
 });
 
+describe('calls and alerts', () => {
+  it('credits the first caller of a token in a group, and ranks the week\'s calls', async () => {
+    const h = harness();
+    h.list(MINT);
+    await h.say(`/ca ${MINT}`, ADMIN, { from: { id: ADMIN, is_bot: false, first_name: 'Ana', username: 'ana_calls' } });
+    expect(h.lastText()).toContain('🏆 First call: ana\\_calls @ 4K');
+    h.feed.apply({ type: 'token_tick', ts: 1, address: MINT, price: 0.00002, mc: 20_000, at: 1 });
+    h.tick(3_600_000);
+    await h.say(`/ca ${MINT}`, MEMBER);
+    expect(h.lastText()).toContain('🏆 ana\\_calls @ 4K · 5\\.0x · 1h');
+    await h.say('/calls', MEMBER);
+    expect(h.lastText()).toContain('🥇 [ZOP]');
+    expect(h.lastText()).toContain('5\\.0x');
+    // A private chat keeps no calls.
+    await h.say(`/ca ${MINT}`, MEMBER, {}, { id: MEMBER, type: 'private', first_name: 'U' });
+    expect(h.lastText()).not.toContain('🏆');
+  });
+
+  it('lets only admins switch alerts, and posts a graduation in the group', async () => {
+    const h = harness();
+    await h.say('/launches on 50k pump.fun', MEMBER);
+    expect(h.lastText()).toContain('Only a group admin');
+    await h.say('/launches on 50k nowhere');
+    expect(h.lastText()).toContain('not a launchpad');
+    await h.say('/launches on 50k pump.fun');
+    expect(h.lastText()).toContain('reach $50K on pump\\.fun');
+    await h.say('/graduations on');
+    const record = await h.store.get(String(GROUP));
+    expect(record!.alerts).toMatchObject({ launches: { minMc: 50_000, launchpad: 'pumpfun' }, graduations: { on: true } });
+    await h.say('/launches', MEMBER);
+    expect(h.lastText()).toContain('🎓 Graduations: on');
+
+    // The engine reads the new settings on its next round (every two seconds when running).
+    await h.alerts.refresh();
+    h.feed.apply({ type: 'token_upsert', ts: 1, token: { address: MINT, symbol: 'ZOP', name: 'Zop', launchpad: 'pumpfun', stage: 'bonding', mc: 60_000, createdAt: h.now() } });
+    h.feed.apply({ type: 'token_patch', ts: 1, address: MINT, patch: { stage: 'migrated' } });
+    // One alert per group per round.
+    await h.alerts.flush();
+    await h.alerts.flush();
+    const posts = h.sent().filter((c) => String(c.payload.text).startsWith('🚀') || String(c.payload.text).startsWith('🎓'));
+    expect(posts.map((c) => String(c.payload.text).split('\n')[0])).toEqual(['🚀 *New launch past $50K* on pump\\.fun', '🎓 *Graduated from pump\\.fun*']);
+    await h.say('/graduations off');
+    expect((await h.store.get(String(GROUP)))!.alerts!.graduations).toBeNull();
+  });
+});
+
 describe('settings', () => {
   it('reads a complete configuration', () => {
     const config = readConfig({ TELEGRAM_BOT_TOKEN: TOKEN, REDIS_URL: 'redis://localhost:6379', BOT_BUTTONS: 'Chart|https://example.com/{address}', LINK_TX: 'https://example.com/tx/{tx}' });
@@ -300,6 +348,8 @@ describe('settings', () => {
     expect(config.links.buttons).toEqual([{ label: 'Chart', url: 'https://example.com/{address}' }]);
     expect(config.links.tx).toBe('https://example.com/tx/{tx}');
     expect(config.storePath).toBe('./data/telegram.json');
+    expect(config.snapshotPath).toBe('./data/feed-snapshot.json');
+    expect(readConfig({ TELEGRAM_BOT_TOKEN: TOKEN, SNAPSHOT_PATH: 'off' }).snapshotPath).toBeNull();
     expect(config.poweredBy).toBeNull();
     expect(readConfig({ TELEGRAM_BOT_TOKEN: TOKEN }).feed).toEqual({ kind: 'stdin' });
     expect(readConfig({ TELEGRAM_BOT_TOKEN: TOKEN, BOT_POWERED_BY: 'Powered by Example' }).poweredBy).toBe('Powered by Example');

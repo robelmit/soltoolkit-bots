@@ -7,9 +7,9 @@
  * pacing here is the buy bot's own (one post per server every ten seconds).
  */
 
-import { BuyBotEngine, CardLimiter, FeedState, JsonFileStore, detectAddress, readJsonl, readRedisStream, withTokenFacts, type Logger, type PostOutcome } from '@soltoolkit/bot-core';
+import { AlertEngine, BuyBotEngine, CardLimiter, FeedState, JsonFileStore, detectAddress, firstCall, isDevAlert, keepFeedSnapshot, loadFeedSnapshot, readJsonl, readRedisStream, withTokenFacts, type Logger, type PostOutcome } from '@soltoolkit/bot-core';
 import { Client, DiscordAPIError, Events, GatewayIntentBits, MessageFlags, PermissionFlagsBits, REST, Routes } from 'discord.js';
-import { buyPayload, tokenPayload, type Payload } from './cards';
+import { alertPayload, buyPayload, tokenPayload, type Payload } from './cards';
 import { COMMANDS, handleButton, handleCommand, newRefreshGate } from './commands';
 import { readConfig } from './config';
 
@@ -27,6 +27,7 @@ async function main(): Promise<void> {
   const config = readConfig(process.env);
   const store = await JsonFileStore.open(config.storePath);
   const feed = new FeedState();
+  if (config.snapshotPath) log.info('tokens taken back from the last run', { tokens: await loadFeedSnapshot(feed, config.snapshotPath).catch(() => 0) });
   const client = new Client({ intents: [GatewayIntentBits.Guilds, ...(config.messageContent ? [GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] : [])] });
 
   const send = async (channelId: string, payload: Payload): Promise<PostOutcome> => {
@@ -60,14 +61,42 @@ async function main(): Promise<void> {
   });
   feed.onTrade(engine.onTrade);
 
+  const alerts = new AlertEngine({
+    store,
+    log,
+    creatorOf: (address) => feed.creatorOf(address),
+    post: async (community, alert) => {
+      // A dev sale goes where the buy bot posts; launches and graduations where the alerts were set.
+      const channelId = isDevAlert(alert.kind) ? community.buyBot?.channelId : community.alerts?.channelId;
+      if (!channelId) return 'failed';
+      const token = await feed.token(alert.address);
+      if (!token) return 'dropped';
+      const caller = community.calls?.find((c) => c.address === token.address) ?? null;
+      const outcome = await send(channelId, alertPayload(alert, token, community, config.links, Date.now(), { rank: await feed.rank(token.address), poweredBy: config.poweredBy, caller }));
+      if (outcome === 'gone') {
+        // The channel is gone, not the server: those alerts stop and a manager sets them again.
+        await store.upsert(community.id, isDevAlert(alert.kind) ? { buyBot: null } : { alerts: null }).catch(() => undefined);
+        changed();
+        return 'failed';
+      }
+      return outcome;
+    },
+  });
+  feed.onToken(alerts.onToken);
+  feed.onTrade(alerts.onTrade);
+  const changed = (): void => {
+    engine.invalidate();
+    alerts.invalidate();
+  };
+
   client.on(Events.GuildCreate, (guild) => void store.upsert(guild.id, { title: guild.name, left: false }).then(() => log.info('added to server', { guildId: guild.id })));
-  client.on(Events.GuildDelete, (guild) => void store.upsert(guild.id, { left: true }).then(() => engine.invalidate()));
+  client.on(Events.GuildDelete, (guild) => void store.upsert(guild.id, { left: true }).then(() => changed()));
 
   const gate = newRefreshGate();
   client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isButton()) {
       try {
-        const reply = await handleButton({ customId: interaction.customId, messageId: interaction.message.id }, { source: feed, store, links: config.links, changed: () => undefined, poweredBy: config.poweredBy, gate });
+        const reply = await handleButton({ customId: interaction.customId, messageId: interaction.message.id, guildId: interaction.guildId }, { source: feed, store, links: config.links, changed: () => undefined, poweredBy: config.poweredBy, gate });
         if (!reply) return;
         if (reply.kind === 'update') await interaction.update(reply.payload);
         else await interaction.reply({ ...reply.payload, flags: MessageFlags.Ephemeral });
@@ -85,12 +114,16 @@ async function main(): Promise<void> {
           guildName: interaction.guild?.name ?? null,
           channelId: interaction.channelId,
           userId: interaction.user.id,
+          userName: interaction.user.globalName ?? interaction.user.username,
           canManage: interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ?? false,
           address: interaction.options.getString('address'),
           usd: interaction.options.getNumber('usd'),
           channel: interaction.options.getChannel('channel')?.id ?? null,
+          mode: interaction.options.getString('mode'),
+          minMc: interaction.options.getNumber('min_mc'),
+          launchpad: interaction.options.getString('launchpad'),
         },
-        { source: feed, store, links: config.links, changed: () => engine.invalidate(), poweredBy: config.poweredBy },
+        { source: feed, store, links: config.links, changed, poweredBy: config.poweredBy },
       );
       await interaction.reply({ ...reply.payload, ...(reply.ephemeral ? { flags: MessageFlags.Ephemeral } : {}) });
     } catch (error) {
@@ -106,16 +139,21 @@ async function main(): Promise<void> {
       const address = detectAddress(message.content);
       if (!address || !limiter.allow(message.guildId, address)) return;
       const token = await feed.token(address);
-      if (token) await send(message.channelId, tokenPayload(token, config.links, Date.now(), { rank: await feed.rank(address), poweredBy: config.poweredBy }));
+      if (!token) return;
+      const caller = await firstCall(store, message.guildId, { address, symbol: token.symbol, mc: token.mc }, { id: message.author.id, name: message.author.globalName ?? message.author.username }, Date.now()).catch(() => null);
+      await send(message.channelId, tokenPayload(token, config.links, Date.now(), { rank: await feed.rank(address), poweredBy: config.poweredBy, caller }));
     });
   }
 
   const stop = new AbortController();
+  // Saves now and then, and once more as the bot stops, so the next start knows the same tokens.
+  const saving = config.snapshotPath ? keepFeedSnapshot(feed, config.snapshotPath, { signal: stop.signal, log }) : Promise.resolve();
   const shutdown = (): void => {
     if (stop.signal.aborted) return;
     log.info('stopping');
     stop.abort();
     void client.destroy();
+    void saving.then(() => log.info('tokens saved for the next start'));
   };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
@@ -136,6 +174,7 @@ async function main(): Promise<void> {
   await new REST({ version: '10' }).setToken(config.token).put(Routes.applicationCommands(config.applicationId), { body: COMMANDS });
   log.info('slash commands registered', { count: COMMANDS.length });
   void engine.run(stop.signal);
+  void alerts.run(stop.signal);
   await client.login(config.token);
 }
 

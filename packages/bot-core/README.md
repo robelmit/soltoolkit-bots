@@ -63,11 +63,14 @@ Node 20 or later. No dependencies.
 | `FeedState` | Applies the feed's events. Answers `token(address)`, `trending(limit)`, `rank(address)`, `latest(limit)` and `lastTradeAt(address)`. Holds at most `maxTokens` tokens (50,000 by default) and drops the ones untouched longest |
 | `readJsonl`, `readRedisStream` | Read the feed from lines of JSON, or from its Redis Stream with any client that has `xread` (ioredis fits) |
 | `BuyBotEngine` | Decides which buys to post and when: the community's least size, one post per community every ten seconds, busy spells merged, old buys skipped |
+| `AlertEngine`, `alertCard`, `parseLaunchArgs` | Alerts: new launches the first time they reach a market cap, graduations, and the tracked token's creator selling; one of each kind a minute per community, stale ones dropped |
+| `firstCall`, `callsCard` | First calls per community, and the week's best calls |
+| `saveFeedSnapshot`, `loadFeedSnapshot`, `keepFeedSnapshot` | The tokens a bot knows, kept across restarts |
 | `tokenCard`, `trendingCard`, `buyPostCard` | Build the messages as rich-text lines. A card can carry the token's trending rank and the chat's first call |
 | `toMarkdownV2`, `toDiscord`, `toPlain`, `toText` | Print those lines for Telegram, for Discord, as plain text with links, or as text alone, escaping what each platform treats as markup |
 | `telegramEntities` | How many formatting entities a message makes; Telegram ignores those past 100 |
 | `CardLimiter`, `SendSlots` | A budget for unasked cards, and send times that stay inside a platform's rates |
-| `MemoryStore`, `JsonFileStore` | Where communities' settings are kept; `Store` is four methods if you want a database |
+| `MemoryStore`, `JsonFileStore` | Where communities' settings are kept; `Store` is four methods if you want a database (a fifth, `withAlerts`, for alerts) |
 | `linkTemplates`, `parseButtons`, `parseLinkRow`, `linksFromSettings` | Where links and buttons point, read from the bots' settings |
 
 ## What a card shows, and from where
@@ -115,7 +118,7 @@ interface DataSource {
 
 - It does not trade, sign, or hold keys.
 - It does not verify holders or manage roles.
-- It does not keep history: a restart starts with an empty `FeedState`.
+- It keeps no trade history. A restart starts with the tokens of the last snapshot and no trades; the feed fills the rest.
 - Solana only, as the launch feed is.
 
 ## Tests
@@ -124,7 +127,7 @@ interface DataSource {
 pnpm --filter @soltoolkit/bot-core test
 ```
 
-57 tests. The feed tests replay real output of the launch feed (`test/fixtures/feed.jsonl`).
+68 tests. The feed tests replay real output of the launch feed (`test/fixtures/feed.jsonl`).
 
 ## Licence
 

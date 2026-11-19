@@ -8,7 +8,29 @@
  * declared on the command, because a server can change who sees a command.
  */
 
-import { CardLimiter, DEFAULT_MIN_BUY_USD, MIN_BUY_USD_RANGE, ago, detectAddress, fmtUsd, shortAddr, type BuyBotConfig, type DataSource, type Line, type LinkTemplates, type Span, type Store } from '@soltoolkit/bot-core';
+import {
+  CardLimiter,
+  DEFAULT_LAUNCH_MIN_MC,
+  DEFAULT_MIN_BUY_USD,
+  LAUNCH_MIN_MC_RANGE,
+  MIN_BUY_USD_RANGE,
+  ago,
+  callsCard,
+  detectAddress,
+  firstCall,
+  fmtShort,
+  fmtUsd,
+  launchpadId,
+  launchpadLabel,
+  shortAddr,
+  type AlertConfig,
+  type BuyBotConfig,
+  type DataSource,
+  type Line,
+  type LinkTemplates,
+  type Span,
+  type Store,
+} from '@soltoolkit/bot-core';
 import { ApplicationCommandOptionType, ChannelType, PermissionFlagsBits, type RESTPostAPIChatInputApplicationCommandsJSONBody } from 'discord.js';
 import { COPY_PREFIX, REFRESH_PREFIX, note, tokenPayload, trendingPayload, type Payload } from './cards';
 
@@ -19,6 +41,8 @@ export interface ButtonInput {
   readonly customId: string;
   /** The message the button is on. */
   readonly messageId: string;
+  /** The server, for the card's first call. */
+  readonly guildId?: string | null;
 }
 
 /** Either the card redrawn in place, or a short answer only the presser sees. */
@@ -36,7 +60,8 @@ export async function handleButton(input: ButtonInput, deps: CommandDeps & { rea
   const token = await deps.source.token(address);
   if (!token) return { kind: 'reply', payload: note([['The feed no longer holds this token, so the card stays as it was.']]) };
   const now = (deps.now ?? Date.now)();
-  return { kind: 'update', payload: tokenPayload(token, deps.links, now, { rank: (await deps.source.rank?.(address)) ?? null, poweredBy: deps.poweredBy ?? null }) };
+  const caller = input.guildId ? ((await deps.store.get(input.guildId))?.calls?.find((c) => c.address === address) ?? null) : null;
+  return { kind: 'update', payload: tokenPayload(token, deps.links, now, { rank: (await deps.source.rank?.(address)) ?? null, poweredBy: deps.poweredBy ?? null, caller }) };
 }
 
 const TRENDING_COUNT = 5;
@@ -60,6 +85,29 @@ export const COMMANDS: RESTPostAPIChatInputApplicationCommandsJSONBody[] = [
   { name: 'minbuy', description: 'The least buy posted, in USD', dm_permission: false, default_member_permissions: ADMIN, options: [{ type: ApplicationCommandOptionType.Number, name: 'usd', description: 'Dollars, from 1 to 1,000,000', required: true, min_value: MIN_BUY_USD_RANGE.min, max_value: MIN_BUY_USD_RANGE.max }] },
   { name: 'untrack', description: 'Stop the buy bot', dm_permission: false, default_member_permissions: ADMIN },
   { name: 'buybot', description: "The buy bot's settings", dm_permission: false },
+  { name: 'calls', description: 'The best calls in this server this week', dm_permission: false },
+  {
+    name: 'launches',
+    description: 'Post new launches the first time they reach a market cap',
+    dm_permission: false,
+    default_member_permissions: ADMIN,
+    options: [
+      { type: ApplicationCommandOptionType.String, name: 'mode', description: 'On or off', required: true, choices: [{ name: 'on', value: 'on' }, { name: 'off', value: 'off' }] },
+      { type: ApplicationCommandOptionType.Number, name: 'min_mc', description: 'Market cap in USD (default 20,000)', min_value: LAUNCH_MIN_MC_RANGE.min, max_value: LAUNCH_MIN_MC_RANGE.max },
+      { type: ApplicationCommandOptionType.String, name: 'launchpad', description: 'Only this launchpad, such as pump.fun (every launchpad when left out)' },
+      { type: ApplicationCommandOptionType.Channel, name: 'channel', description: 'Where the alerts are posted (this channel when left out)', channel_types: [ChannelType.GuildText, ChannelType.GuildAnnouncement] },
+    ],
+  },
+  {
+    name: 'graduations',
+    description: 'Post tokens that finish their bonding curve',
+    dm_permission: false,
+    default_member_permissions: ADMIN,
+    options: [
+      { type: ApplicationCommandOptionType.String, name: 'mode', description: 'On or off', required: true, choices: [{ name: 'on', value: 'on' }, { name: 'off', value: 'off' }] },
+      { type: ApplicationCommandOptionType.Channel, name: 'channel', description: 'Where the alerts are posted (this channel when left out)', channel_types: [ChannelType.GuildText, ChannelType.GuildAnnouncement] },
+    ],
+  },
   { name: 'help', description: 'What the bot does', dm_permission: false },
 ];
 
@@ -70,12 +118,18 @@ export interface CommandInput {
   readonly guildName: string | null;
   readonly channelId: string;
   readonly userId: string;
+  /** The member's name as shown, for a first call. */
+  readonly userName?: string | null;
   /** Whether Discord says the member may manage the server. */
   readonly canManage: boolean;
   readonly address?: string | null;
   readonly usd?: number | null;
-  /** The channel option of `/track`, when given. */
+  /** The channel option of `/track`, `/launches` and `/graduations`, when given. */
   readonly channel?: string | null;
+  /** `/launches` and `/graduations`. */
+  readonly mode?: string | null;
+  readonly minMc?: number | null;
+  readonly launchpad?: string | null;
 }
 
 export interface CommandReply {
@@ -97,9 +151,10 @@ export interface CommandDeps {
 
 const HELP: Line[] = [
   [{ bold: 'What this bot does' }],
-  ['• /ca <address> shows a token card.'],
+  ['• /ca <address> shows a token card. The first card of a token in a server credits whoever called it; /calls ranks the week\'s calls.'],
   ['• /trending lists the most traded launchpad tokens of the last 5 minutes.'],
-  ['• Server managers: /track <address> posts every buy of a token in a channel. /minbuy sets the least buy posted, /untrack stops it.'],
+  ['• Server managers: /track <address> posts every buy of a token in a channel, and warns when its creator sells. /minbuy sets the least buy posted, /untrack stops it.'],
+  ['• Server managers: /launches posts new tokens the first time they reach a market cap (default $20K); /graduations posts tokens that finish their curve.'],
   ['The bot reads public chain data. It never trades and never asks for a wallet or a key.'],
 ];
 
@@ -132,7 +187,42 @@ export async function handleCommand(input: CommandInput, deps: CommandDeps): Pro
       if (!address) return quiet([['That is not a Solana token address.']]);
       const token = await source.token(address);
       if (!token) return quiet([['The feed has not seen ', { code: address }, ' yet. It lists tokens of the launchpads it follows from the moment the bot started.']]);
-      return aloud(tokenPayload(token, links, now, { rank: (await source.rank?.(address)) ?? null, poweredBy: deps.poweredBy ?? null }));
+      const caller = await firstCall(store, guildId, { address, symbol: token.symbol, mc: token.mc }, { id: input.userId, name: input.userName ?? 'someone' }, now).catch(() => null);
+      return aloud(tokenPayload(token, links, now, { rank: (await source.rank?.(address)) ?? null, poweredBy: deps.poweredBy ?? null, caller }));
+    }
+
+    case 'calls':
+      return aloud({ ...note(await callsCard((await store.get(guildId))?.calls ?? [], source, links, now)) });
+
+    case 'launches':
+    case 'graduations': {
+      const refused = managerOnly();
+      if (refused) return refused;
+      const on = input.mode === 'on';
+      const current = (await store.get(guildId))?.alerts ?? null;
+      let launches: AlertConfig['launches'] = current?.launches ?? null;
+      let graduations: AlertConfig['graduations'] = current?.graduations ?? null;
+      let said: string;
+      if (input.name === 'launches') {
+        if (!on) {
+          launches = null;
+          said = '✅ Launch alerts off.';
+        } else {
+          const minMc = input.minMc ?? DEFAULT_LAUNCH_MIN_MC;
+          if (minMc < LAUNCH_MIN_MC_RANGE.min || minMc > LAUNCH_MIN_MC_RANGE.max) return quiet([[`The market cap is from $${fmtShort(LAUNCH_MIN_MC_RANGE.min)} to $${fmtShort(LAUNCH_MIN_MC_RANGE.max)}.`]]);
+          const launchpad = input.launchpad ? launchpadId(input.launchpad) : null;
+          if (input.launchpad && !launchpad) return quiet([[`"${input.launchpad.slice(0, 40)}" is not a launchpad this bot knows.`]]);
+          launches = { minMc, launchpad };
+          said = `✅ New launches are posted the first time they reach $${fmtShort(minMc)}${launchpad ? ` on ${launchpadLabel(launchpad)}` : ''}: tokens younger than an hour, at most one a minute.`;
+        }
+      } else {
+        graduations = on ? { on: true } : null;
+        said = on ? '✅ Tokens that finish their bonding curve are posted, at most one a minute.' : '✅ Graduation alerts off.';
+      }
+      const channelId = input.channel ?? current?.channelId ?? input.channelId;
+      await store.upsert(guildId, { title: input.guildName, left: false, alerts: { launches, graduations, channelId, setBy: input.userId, setAt: now } });
+      deps.changed();
+      return quiet([[said], ...(launches || graduations ? [['Alerts go to ', channelLink(guildId, channelId), '.'] as Line] : [])]);
     }
 
     case 'trending':

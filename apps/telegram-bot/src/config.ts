@@ -12,6 +12,8 @@ export interface Config {
   readonly feed: { readonly kind: 'stdin' } | { readonly kind: 'redis'; readonly url: string; readonly key: string };
   /** The JSON file the groups' settings are kept in. */
   readonly storePath: string;
+  /** Where the tokens the bot knows are kept across restarts; null when off (`SNAPSHOT_PATH=off`). */
+  readonly snapshotPath: string | null;
   readonly links: LinkTemplates;
   /** A credit line for whoever runs the bot, shown at the end of the welcome and /help. */
   readonly poweredBy: string | null;
@@ -50,5 +52,6 @@ export function readConfig(env: Readonly<Record<string, string | undefined>>): C
   const image = get('BOT_CARD_IMAGE');
   if (image !== undefined && image !== '0' && image !== '1') throw new Error('BOT_CARD_IMAGE is 1 or 0');
 
-  return { token, feed, storePath: get('STORE_PATH') ?? './data/telegram.json', links, poweredBy, cardImage: image === '1' };
+  const snapshot = get('SNAPSHOT_PATH');
+  return { token, feed, storePath: get('STORE_PATH') ?? './data/telegram.json', snapshotPath: snapshot?.toLowerCase() === 'off' ? null : (snapshot ?? './data/feed-snapshot.json'), links, poweredBy, cardImage: image === '1' };
 }

@@ -8,18 +8,23 @@
 
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { BuyBotConfig, CommunityPatch, CommunityRecord, Store } from './types';
+import type { AlertConfig, BuyBotConfig, Call, CommunityPatch, CommunityRecord, Store } from './types';
 
 function applyPatch(current: CommunityRecord | undefined, id: string, patch: CommunityPatch, at: number): CommunityRecord {
-  const base: CommunityRecord = current ?? { id, title: null, buyBot: null, left: false, updatedAt: at };
+  const base: CommunityRecord = current ?? { id, title: null, buyBot: null, alerts: null, calls: [], left: false, updatedAt: at };
   return {
     id,
     title: patch.title !== undefined ? patch.title : base.title,
     buyBot: patch.buyBot !== undefined ? patch.buyBot : base.buyBot,
+    alerts: patch.alerts !== undefined ? patch.alerts : (base.alerts ?? null),
+    calls: patch.calls !== undefined ? patch.calls : (base.calls ?? []),
     left: patch.left !== undefined ? patch.left : base.left,
     updatedAt: at,
   };
 }
+
+/** Whether a community's alerts have anything switched on. */
+export const alertsOn = (alerts: AlertConfig | null | undefined): alerts is AlertConfig => !!alerts && (alerts.launches !== null || alerts.graduations !== null);
 
 export class MemoryStore implements Store {
   protected readonly rows = new Map<string, CommunityRecord>();
@@ -41,13 +46,25 @@ export class MemoryStore implements Store {
     return [...this.rows.values()].filter((row) => row.buyBot !== null && !row.left);
   }
 
+  async withAlerts(): Promise<CommunityRecord[]> {
+    return [...this.rows.values()].filter((row) => alertsOn(row.alerts) && !row.left);
+  }
+
   async migrate(fromId: string, toId: string): Promise<void> {
     const old = this.rows.get(fromId);
     if (!old) return;
     const target = this.rows.get(toId);
     const at = this.now();
-    this.rows.set(toId, { id: toId, title: target?.title ?? old.title, buyBot: target?.buyBot ?? old.buyBot, left: false, updatedAt: at });
-    this.rows.set(fromId, { ...old, buyBot: null, left: true, updatedAt: at });
+    this.rows.set(toId, {
+      id: toId,
+      title: target?.title ?? old.title,
+      buyBot: target?.buyBot ?? old.buyBot,
+      alerts: target?.alerts ?? old.alerts ?? null,
+      calls: [...(old.calls ?? []), ...(target?.calls ?? [])],
+      left: false,
+      updatedAt: at,
+    });
+    this.rows.set(fromId, { ...old, buyBot: null, alerts: null, left: true, updatedAt: at });
     await this.changed();
   }
 
@@ -73,6 +90,26 @@ function readBuyBot(value: unknown): BuyBotConfig | null {
   };
 }
 
+const positive = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0;
+
+function readAlerts(value: unknown): AlertConfig | null {
+  if (!isRecord(value)) return null;
+  const l = isRecord(value.launches) && positive(value.launches.minMc) ? { minMc: value.launches.minMc, launchpad: typeof value.launches.launchpad === 'string' ? value.launches.launchpad : null } : null;
+  const g = isRecord(value.graduations) ? ({ on: true } as const) : null;
+  if (!l && !g) return null;
+  return { launches: l, graduations: g, channelId: typeof value.channelId === 'string' ? value.channelId : null, setBy: typeof value.setBy === 'string' ? value.setBy : null, setAt: typeof value.setAt === 'number' ? value.setAt : 0 };
+}
+
+function readCalls(value: unknown): Call[] {
+  if (!Array.isArray(value)) return [];
+  const calls: Call[] = [];
+  for (const c of value) {
+    if (!isRecord(c) || typeof c.address !== 'string' || typeof c.by !== 'string' || typeof c.byId !== 'string' || typeof c.at !== 'number') continue;
+    calls.push({ address: c.address, symbol: typeof c.symbol === 'string' ? c.symbol : null, by: c.by, byId: c.byId, mc: positive(c.mc) ? c.mc : null, at: c.at });
+  }
+  return calls;
+}
+
 /** The rows of a store file; anything that is not a row is left out. */
 export function readRows(text: string): CommunityRecord[] {
   let parsed: unknown;
@@ -86,7 +123,15 @@ export function readRows(text: string): CommunityRecord[] {
   const rows: CommunityRecord[] = [];
   for (const item of list) {
     if (!isRecord(item) || typeof item.id !== 'string' || !item.id) continue;
-    rows.push({ id: item.id, title: typeof item.title === 'string' ? item.title : null, buyBot: readBuyBot(item.buyBot), left: item.left === true, updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : 0 });
+    rows.push({
+      id: item.id,
+      title: typeof item.title === 'string' ? item.title : null,
+      buyBot: readBuyBot(item.buyBot),
+      alerts: readAlerts(item.alerts),
+      calls: readCalls(item.calls),
+      left: item.left === true,
+      updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : 0,
+    });
   }
   return rows;
 }

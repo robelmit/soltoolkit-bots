@@ -4,7 +4,7 @@
  * Telegram for updates. Stops cleanly on SIGINT and SIGTERM.
  */
 
-import { FeedState, JsonFileStore, readJsonl, readRedisStream, type Logger } from '@soltoolkit/bot-core';
+import { FeedState, JsonFileStore, keepFeedSnapshot, loadFeedSnapshot, readJsonl, readRedisStream, type Logger } from '@soltoolkit/bot-core';
 import { COMMANDS, createBot } from './bot';
 import { readConfig } from './config';
 
@@ -19,15 +19,21 @@ async function main(): Promise<void> {
   const config = readConfig(process.env);
   const store = await JsonFileStore.open(config.storePath);
   const feed = new FeedState();
-  const { bot, engine } = createBot({ token: config.token, source: feed, store, links: config.links, log, poweredBy: config.poweredBy, cardImage: config.cardImage });
+  if (config.snapshotPath) log.info('tokens taken back from the last run', { tokens: await loadFeedSnapshot(feed, config.snapshotPath).catch(() => 0) });
+  const { bot, engine, alerts } = createBot({ token: config.token, source: feed, store, links: config.links, log, poweredBy: config.poweredBy, cardImage: config.cardImage });
   feed.onTrade(engine.onTrade);
+  feed.onToken(alerts.onToken);
+  feed.onTrade(alerts.onTrade);
 
   const stop = new AbortController();
+  // Saves now and then, and once more as the bot stops, so the next start knows the same tokens.
+  const saving = config.snapshotPath ? keepFeedSnapshot(feed, config.snapshotPath, { signal: stop.signal, log }) : Promise.resolve();
   const shutdown = (): void => {
     if (stop.signal.aborted) return;
     log.info('stopping');
     stop.abort();
     void bot.stop();
+    void saving.then(() => log.info('tokens saved for the next start'));
   };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
@@ -45,9 +51,11 @@ async function main(): Promise<void> {
   }
 
   void engine.run(stop.signal);
+  void alerts.run(stop.signal);
   await bot.api.setMyCommands([...COMMANDS]).catch((error: unknown) => log.warn('the command menu could not be set', { error: error instanceof Error ? error.message : String(error) }));
   await bot.start({
-    allowed_updates: ['message', 'my_chat_member'],
+    // callback_query carries the Refresh button's presses.
+    allowed_updates: ['message', 'my_chat_member', 'callback_query'],
     onStart: (me) => log.info('bot started', { username: me.username }),
   });
 }

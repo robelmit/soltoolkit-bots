@@ -14,9 +14,18 @@
  */
 
 import {
+  AlertEngine,
   BuyBotEngine,
   CardLimiter,
   DEFAULT_MIN_BUY_USD,
+  alertCard,
+  callsCard,
+  firstCall,
+  isDevAlert,
+  fmtShort,
+  launchpadLabel,
+  parseLaunchArgs,
+  type Call,
   MIN_BUY_USD_RANGE,
   ago,
   buttonsFor,
@@ -65,6 +74,7 @@ export interface BotOptions {
 export interface TelegramBot {
   readonly bot: Bot;
   readonly engine: BuyBotEngine;
+  readonly alerts: AlertEngine;
   readonly outbox: Outbox;
 }
 
@@ -72,11 +82,14 @@ export interface TelegramBot {
 export const COMMANDS = [
   { command: 'ca', description: 'Token card: /ca <address>' },
   { command: 'trending', description: 'Most traded in the last 5 minutes' },
+  { command: 'calls', description: 'The best calls in this group this week' },
   { command: 'track', description: 'Admins: post every buy of a token here' },
   { command: 'minbuy', description: 'Admins: the least buy posted, in USD' },
   { command: 'buymedia', description: 'Admins: reply to a picture or GIF to post it with buys' },
   { command: 'untrack', description: 'Admins: stop the buy bot' },
   { command: 'buybot', description: "The buy bot's settings" },
+  { command: 'launches', description: 'Admins: post new launches past a market cap' },
+  { command: 'graduations', description: 'Admins: post tokens that finish their curve' },
   { command: 'help', description: 'What the bot does' },
 ] as const;
 
@@ -88,9 +101,10 @@ const TRENDING_COUNT = 5;
 
 const HELP: Line[] = [
   [{ bold: 'What this bot does' }],
-  ['• Paste a token address, or send /ca <address>, for a token card.'],
+  ['• Paste a token address, or send /ca <address>, for a token card. The first card of a token in a group credits whoever called it; /calls ranks the week\'s calls.'],
   ['• /trending lists the most traded launchpad tokens of the last 5 minutes.'],
-  ['• Admins: /track <address> posts every buy of a token here. /minbuy <usd> sets the least buy posted, /buymedia adds a picture, /untrack stops it.'],
+  ['• Admins: /track <address> posts every buy of a token here, and warns when its creator sells. /minbuy <usd> sets the least buy posted, /buymedia adds a picture, /untrack stops it.'],
+  ['• Admins: /launches on [market cap] [launchpad] posts new tokens the first time they reach a market cap (default $20K). /graduations on posts tokens that finish their curve. "off" stops either.'],
   ['The bot reads public chain data. It never trades and never asks for a wallet or a key.'],
 ];
 
@@ -141,13 +155,43 @@ export function createBot(options: BotOptions): TelegramBot {
     }
   };
 
-  /** A token's card with its rank, its buttons and, when asked for, its picture. */
-  const cardOf = async (token: TokenView): Promise<{ lines: Line[]; buttons: LinkButton[]; actions: CardActions; previewUrl: string | null }> => ({
-    lines: tokenCard(token, links, now(), { rank: (await source.rank?.(token.address)) ?? null }),
+  /** A token's card with its rank, its first call in this chat, its buttons and, when asked for, its picture. */
+  const cardOf = async (token: TokenView, caller: Call | null = null): Promise<{ lines: Line[]; buttons: LinkButton[]; actions: CardActions; previewUrl: string | null }> => ({
+    lines: tokenCard(token, links, now(), { rank: (await source.rank?.(token.address)) ?? null, caller }),
     buttons: buttonsFor(links, token.address),
     actions: { copy: token.address, refresh: token.address },
     previewUrl: options.cardImage ? (token.image ?? null) : null,
   });
+
+  /** The chat's call of a token, noting this one when it is the first; none outside groups. */
+  const callOf = async (ctx: Context, token: TokenView): Promise<Call | null> => {
+    if (!isGroup(ctx) || !ctx.from || ctx.from.id === GROUP_ANONYMOUS_BOT) return null;
+    const name = ctx.from.username ?? [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ');
+    return firstCall(store, chatKey(ctx), { address: token.address, symbol: token.symbol, mc: token.mc }, { id: String(ctx.from.id), name }, now()).catch((error: unknown) => {
+      log.warn('a call could not be noted', { chat: chatKey(ctx), error: error instanceof Error ? error.message : String(error) });
+      return null;
+    });
+  };
+
+  const alerts = new AlertEngine({
+    store,
+    log,
+    now,
+    creatorOf: source.creatorOf ? (address) => source.creatorOf!(address) : undefined,
+    post: async (community, alert) => {
+      const token = await source.token(alert.address);
+      if (!token) return 'dropped';
+      const caller = community.calls?.find((c) => c.address === token.address) ?? null;
+      const lines = alertCard(alert, token, community, links, now(), { rank: (await source.rank?.(token.address)) ?? null, caller });
+      const result = await outbox.text(community.id, lines, { kind: alert.kind, buttons: buttonsFor(links, token.address), actions: { copy: token.address, refresh: isDevAlert(alert.kind) ? undefined : token.address }, maxWaitMs: 5_000 });
+      return result.outcome;
+    },
+  });
+  /** Settings changed: both engines read them again. */
+  const changed = (): void => {
+    engine.invalidate();
+    alerts.invalidate();
+  };
 
   /** A card is redrawn at most once in 15 seconds, and four times a minute. */
   const refreshGate = new CardLimiter(4, 15_000, now);
@@ -194,7 +238,7 @@ export function createBot(options: BotOptions): TelegramBot {
     const is = ctx.myChatMember.new_chat_member.status;
     if (is === 'left' || is === 'kicked') {
       await store.upsert(chatKey(ctx), { title: titleOf(ctx), left: true });
-      engine.invalidate();
+      changed();
       log.info('left group', { chat: chatKey(ctx) });
       return;
     }
@@ -209,11 +253,11 @@ export function createBot(options: BotOptions): TelegramBot {
   // moves the settings, the other finds nothing left to move.
   bot.on('message:migrate_to_chat_id', async (ctx) => {
     await store.migrate(chatKey(ctx), String(ctx.message.migrate_to_chat_id));
-    engine.invalidate();
+    changed();
   });
   bot.on('message:migrate_from_chat_id', async (ctx) => {
     await store.migrate(String(ctx.message.migrate_from_chat_id), chatKey(ctx));
-    engine.invalidate();
+    changed();
   });
 
   // ---- cards ---------------------------------------------------------------
@@ -231,7 +275,7 @@ export function createBot(options: BotOptions): TelegramBot {
       if (explicit) await reply(ctx, [['The feed has not seen ', { code: address }, ' yet. It lists tokens of the launchpads it follows from the moment the bot started.']]);
       return;
     }
-    const { lines, buttons, actions, previewUrl } = await cardOf(token);
+    const { lines, buttons, actions, previewUrl } = await cardOf(token, await callOf(ctx, token));
     if (explicit) return void (await reply(ctx, lines, buttons, { actions, previewUrl }));
     // The bot handles updates one at a time, so an unasked card waits at most 1.5 s for a slot and is dropped past it.
     const result = await outbox.text(chatKey(ctx), lines, { kind: 'card', buttons, actions, previewUrl, maxWaitMs: 1_500 });
@@ -248,7 +292,8 @@ export function createBot(options: BotOptions): TelegramBot {
     if (!refreshGate.allow(`${message.chat.id}:${message.message_id}`, address)) return void (await ctx.answerCallbackQuery({ text: 'Updated a moment ago. Try again in a few seconds.' }));
     const token = await source.token(address);
     if (!token) return void (await ctx.answerCallbackQuery({ text: 'The feed no longer holds this token, so the card stays as it was.' }));
-    const { lines, buttons, actions, previewUrl } = await cardOf(token);
+    const caller = (await store.get(String(message.chat.id)))?.calls?.find((c) => c.address === address) ?? null;
+    const { lines, buttons, actions, previewUrl } = await cardOf(token, caller);
     const keyboard = keyboardOf(buttons, actions);
     const markup = keyboard ? { reply_markup: keyboard } : {};
     const preview = previewOf(previewUrl);
@@ -289,7 +334,7 @@ export function createBot(options: BotOptions): TelegramBot {
     };
     // A command in the group means the bot is in it, whatever an earlier failed post concluded.
     await store.upsert(chatKey(ctx), { title: titleOf(ctx), buyBot: config, left: false });
-    engine.invalidate();
+    changed();
     log.info('buy bot on', { chat: chatKey(ctx), address, minUsd: config.minUsd });
     await reply(ctx, [
       ['✅ ', { bold: `Buy bot on for ${config.symbol ?? shortAddr(address)}` }],
@@ -303,7 +348,7 @@ export function createBot(options: BotOptions): TelegramBot {
   bot.command('untrack', async (ctx) => {
     if (!(await adminInGroup(ctx))) return;
     await store.upsert(chatKey(ctx), { buyBot: null });
-    engine.invalidate();
+    changed();
     await reply(ctx, [['✅ Buy bot off.']]);
   });
 
@@ -317,7 +362,7 @@ export function createBot(options: BotOptions): TelegramBot {
     const usd = parseUsd(arg);
     if (usd === null || usd < MIN_BUY_USD_RANGE.min || usd > MIN_BUY_USD_RANGE.max) return void (await reply(ctx, [['The least buy is a number of dollars from 1 to 1,000,000.']]));
     await store.upsert(chatKey(ctx), { buyBot: { ...config, minUsd: usd } });
-    engine.invalidate();
+    changed();
     await reply(ctx, [[`✅ Buys of ${fmtUsd(usd)} or more are posted.`]]);
   });
 
@@ -327,7 +372,7 @@ export function createBot(options: BotOptions): TelegramBot {
     if (!config) return void (await reply(ctx, NO_TOKEN));
     if (argOf(ctx).toLowerCase() === 'off') {
       await store.upsert(chatKey(ctx), { buyBot: { ...config, media: null } });
-      engine.invalidate();
+      changed();
       return void (await reply(ctx, [['✅ Buy posts are text only now.']]));
     }
     const replied = ctx.message?.reply_to_message;
@@ -335,7 +380,7 @@ export function createBot(options: BotOptions): TelegramBot {
     const animation = replied?.animation?.file_id ?? null;
     if (!photo && !animation) return void (await reply(ctx, [['Reply to a picture or a GIF with /buymedia to post it with every buy; /buymedia off removes it.']]));
     await store.upsert(chatKey(ctx), { buyBot: { ...config, media: animation ? { kind: 'animation', fileId: animation } : { kind: 'photo', fileId: photo! } } });
-    engine.invalidate();
+    changed();
     await reply(ctx, [[`✅ Buy posts now carry this ${animation ? 'GIF' : 'picture'}.`]]);
   });
 
@@ -351,6 +396,48 @@ export function createBot(options: BotOptions): TelegramBot {
     ]);
   });
 
+  // ---- calls and alerts ----------------------------------------------------
+
+  bot.command('calls', async (ctx) => {
+    if (!isGroup(ctx)) return void (await reply(ctx, [['Calls are kept per group: add me to one, and the first card of a token there counts as a call.']]));
+    await reply(ctx, await callsCard((await recordOf(ctx))?.calls ?? [], source, links, now()));
+  });
+
+  const alertsText = (record: CommunityRecord | null): Line[] => {
+    const a = record?.alerts ?? null;
+    return [
+      [{ bold: 'Alerts in this group' }],
+      [`🚀 New launches: ${a?.launches ? `on, past $${fmtShort(a.launches.minMc)}${a.launches.launchpad ? ` on ${launchpadLabel(a.launches.launchpad)}` : ', every launchpad'}` : 'off'}`],
+      [`🎓 Graduations: ${a?.graduations ? 'on' : 'off'}`],
+      [`🚨 Dev sold: ${record?.buyBot ? `on for the tracked token, ${record.buyBot.symbol ?? shortAddr(record.buyBot.address)}` : 'with the buy bot (/track)'}`],
+    ];
+  };
+
+  bot.command('launches', async (ctx) => {
+    if (!isGroup(ctx)) return void (await reply(ctx, GROUPS_ONLY));
+    const record = await recordOf(ctx);
+    if (!argOf(ctx)) return void (await reply(ctx, [...alertsText(record), ['Admins: /launches on [market cap] [launchpad], such as /launches on 50k pump.fun, or /launches off.']]));
+    if (!(await adminInGroup(ctx))) return;
+    const parsed = parseLaunchArgs(argOf(ctx));
+    if ('error' in parsed) return void (await reply(ctx, [[parsed.error]]));
+    const base = record?.alerts ?? { launches: null, graduations: null };
+    await store.upsert(chatKey(ctx), { title: titleOf(ctx), left: false, alerts: { ...base, launches: parsed.on ? { minMc: parsed.minMc, launchpad: parsed.launchpad } : null, setBy: String(ctx.from?.id ?? ''), setAt: now() } });
+    changed();
+    await reply(ctx, [[parsed.on ? `✅ New launches are posted here the first time they reach $${fmtShort(parsed.minMc)}${parsed.launchpad ? ` on ${launchpadLabel(parsed.launchpad)}` : ''}: tokens younger than an hour, at most one a minute.` : '✅ Launch alerts off.']]);
+  });
+
+  bot.command('graduations', async (ctx) => {
+    if (!isGroup(ctx)) return void (await reply(ctx, GROUPS_ONLY));
+    const record = await recordOf(ctx);
+    const mode = argOf(ctx).toLowerCase();
+    if (mode !== 'on' && mode !== 'off') return void (await reply(ctx, [...alertsText(record), ['Admins: /graduations on or /graduations off.']]));
+    if (!(await adminInGroup(ctx))) return;
+    const base = record?.alerts ?? { launches: null, graduations: null };
+    await store.upsert(chatKey(ctx), { title: titleOf(ctx), left: false, alerts: { ...base, graduations: mode === 'on' ? { on: true } : null, setBy: String(ctx.from?.id ?? ''), setAt: now() } });
+    changed();
+    await reply(ctx, [[mode === 'on' ? '✅ Tokens that finish their bonding curve are posted here, at most one a minute.' : '✅ Graduation alerts off.']]);
+  });
+
   bot.command(['help', 'start'], async (ctx) => reply(ctx, help));
 
   // A pasted address (seen only with privacy mode off, as an admin, or in a private chat). Other text is ignored.
@@ -364,5 +451,5 @@ export function createBot(options: BotOptions): TelegramBot {
     log.error('update failed', { update: error.ctx.update.update_id, error: error.error instanceof Error ? error.error.message : String(error.error) });
   });
 
-  return { bot, engine, outbox };
+  return { bot, engine, alerts, outbox };
 }

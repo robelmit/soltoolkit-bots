@@ -131,6 +131,8 @@ export interface DataSource {
   lastTradeAt(address: string): number | null;
   /** The token's place in the trending list (1 is first), or null outside it. Optional for other sources. */
   rank?(address: string): Promise<number | null>;
+  /** The wallet that created the token, when known. Optional: without it no dev sale is seen on a trade. */
+  creatorOf?(address: string): string | null;
 }
 
 /** A group's buy bot: one token, a least size, and where the posts go. */
@@ -147,11 +149,38 @@ export interface BuyBotConfig {
   readonly setAt: number;
 }
 
+/** A community's alerts. Each part is null when it is off. */
+export interface AlertConfig {
+  /** Tokens younger than an hour, posted the first time their market cap reaches `minMc`, from one launchpad or all. */
+  readonly launches: { readonly minMc: number; readonly launchpad: string | null } | null;
+  /** Tokens that finished their bonding curve and moved to a pool. */
+  readonly graduations: { readonly on: true } | null;
+  /** Where the alerts go, where a community has several channels (Discord); the community itself when absent. */
+  readonly channelId?: string | null;
+  readonly setBy: string | null;
+  readonly setAt: number;
+}
+
+/** The first time a token was posted in a community: who posted it, at what market cap, when. */
+export interface Call {
+  readonly address: string;
+  readonly symbol: string | null;
+  /** The caller's name as shown (never a mention). */
+  readonly by: string;
+  readonly byId: string;
+  /** The market cap when it was called; null when the feed did not know it. */
+  readonly mc: number | null;
+  readonly at: number;
+}
+
 /** One community: a Telegram group or a Discord server. */
 export interface CommunityRecord {
   readonly id: string;
   readonly title: string | null;
   readonly buyBot: BuyBotConfig | null;
+  readonly alerts?: AlertConfig | null;
+  /** First calls, newest last; at most a few hundred, the oldest dropped. */
+  readonly calls?: readonly Call[];
   /** The bot was removed, or the community is gone. */
   readonly left: boolean;
   readonly updatedAt: number;
@@ -160,6 +189,8 @@ export interface CommunityRecord {
 export interface CommunityPatch {
   readonly title?: string | null;
   readonly buyBot?: BuyBotConfig | null;
+  readonly alerts?: AlertConfig | null;
+  readonly calls?: readonly Call[];
   readonly left?: boolean;
 }
 
@@ -169,6 +200,8 @@ export interface Store {
   upsert(id: string, patch: CommunityPatch): Promise<CommunityRecord>;
   /** Communities with a buy bot that the bot is still in. */
   withBuyBot(): Promise<CommunityRecord[]>;
+  /** Communities with an alert on that the bot is still in. Optional: a store without it sends no alerts. */
+  withAlerts?(): Promise<CommunityRecord[]>;
   /** A community got a new id (a Telegram group upgraded to a supergroup). */
   migrate(fromId: string, toId: string): Promise<void>;
 }

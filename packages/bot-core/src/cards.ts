@@ -5,6 +5,7 @@
  * nothing known in it is left out.
  */
 
+import { callMultiple, fmtMultiple } from './calls';
 import { DASH, ago, fmtNum, fmtPct, fmtPrice, fmtShort, fmtSol, fmtTokenAmount, fmtUsd, shortAddr } from './format';
 import { holderMapUrl, rowFor, tokenUrl, txUrl, walletUrl, type LinkTemplates } from './links';
 import type { Line, Span } from './rich';
@@ -34,6 +35,16 @@ const LAUNCHPADS: Readonly<Record<string, string>> = {
 
 /** A launchpad's name as people write it. */
 export const launchpadLabel = (id: string | null | undefined): string | null => (id ? (LAUNCHPADS[id] ?? id) : null);
+
+const squash = (text: string): string => text.toLowerCase().replace(/[\s._-]+/g, '');
+
+/** The feed's id of a launchpad as somebody typed it (`pump.fun`, `pumpfun`, `Meteora DBC`); null when unknown. */
+export function launchpadId(typed: string): string | null {
+  const want = squash(typed);
+  if (!want) return null;
+  for (const [id, label] of Object.entries(LAUNCHPADS)) if (squash(id) === want || squash(label) === want) return id;
+  return null;
+}
 
 const APPS: Readonly<Record<string, string>> = {
   axiom: 'Axiom',
@@ -103,7 +114,7 @@ const hasFigures = (w: WindowFigures | null | undefined): w is WindowFigures => 
 export interface CardExtras {
   readonly rank?: number | null;
   /** The chat's first call of this token: who, at what market cap, when. */
-  readonly caller?: { readonly name: string; readonly mc: number | null; readonly at: number } | null;
+  readonly caller?: { readonly by: string; readonly mc: number | null; readonly at: number } | null;
 }
 
 /** A token card, in the order traders read one: what it is, what it is worth, how it trades, who holds it, links. */
@@ -174,8 +185,12 @@ export function tokenCard(token: TokenView, links: LinkTemplates, now: number, e
   lines.push([''], [{ code: token.address }]);
   const caller = extras.caller ?? null;
   if (caller) {
-    const times = known(caller.mc) && caller.mc > 0 && known(token.mc) ? token.mc / caller.mc : null;
-    lines.push([`🏆 ${caller.name} @ `, v(fmtShort(caller.mc)), times !== null ? ` · ${times >= 10 ? Math.round(times) : times.toFixed(1)}x` : '', ` · ${ago(caller.at, now)}`]);
+    // The call being made now credits its caller; a later card says how far it went since.
+    if (now - caller.at < 60_000) lines.push([`🏆 First call: ${caller.by} @ `, v(fmtShort(caller.mc))]);
+    else {
+      const times = callMultiple(caller, token.mc);
+      lines.push([`🏆 ${caller.by} @ `, v(fmtShort(caller.mc)), times !== null ? ` · ${fmtMultiple(times)}` : '', ` · ${ago(caller.at, now)}`]);
+    }
   }
   lines.push(['♻️ Updated ', { time: now }]);
   return lines;

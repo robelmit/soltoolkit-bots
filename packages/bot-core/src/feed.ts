@@ -38,6 +38,19 @@ export interface FeedStateOptions {
   readonly now?: () => number;
 }
 
+/** A token the feed listed or changed: what it was before (null when it is new to the bot) and what it is now. */
+export interface TokenChange {
+  readonly before: FeedToken | null;
+  readonly after: FeedToken;
+}
+
+/** What `exportSnapshot` writes: the tokens without their trades or window figures, which go stale anyway. */
+export interface FeedSnapshot {
+  readonly version: 1;
+  readonly savedAt: number;
+  readonly tokens: readonly { readonly token: FeedToken; readonly peakMc: number | null; readonly peakAt: number | null; readonly lastTradeAt: number | null; readonly touchedAt: number }[];
+}
+
 const finite = (value: number | null | undefined): value is number => typeof value === 'number' && Number.isFinite(value);
 const count = (value: number | null | undefined): number | null => (finite(value) && value >= 0 ? value : null);
 
@@ -104,6 +117,7 @@ export function parseFeedEvent(input: string | unknown): FeedEvent | null {
 export class FeedState implements DataSource {
   private readonly entries = new Map<string, Entry>();
   private readonly listeners = new Set<(trade: FeedTrade) => void>();
+  private readonly tokenListeners = new Set<(change: TokenChange) => void>();
   private readonly maxTokens: number;
   private readonly maxTrades: number;
   private readonly now: () => number;
@@ -126,6 +140,63 @@ export class FeedState implements DataSource {
   onTrade(listener: (trade: FeedTrade) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /**
+   * Calls `listener` each time the feed lists or changes a token (a listing, a patch, a tick). A `column_reset` and a
+   * restored snapshot are not news and call nothing. Returns the way to stop.
+   */
+  onToken(listener: (change: TokenChange) => void): () => void {
+    this.tokenListeners.add(listener);
+    return () => this.tokenListeners.delete(listener);
+  }
+
+  private changed(before: FeedToken | null, after: FeedToken): void {
+    for (const listener of this.tokenListeners) listener({ before, after });
+  }
+
+  /** The tokens touched in the last `maxAgeMs` (default a day), newest first, at most `limit` (default 20,000). */
+  exportSnapshot(options: { readonly maxAgeMs?: number; readonly limit?: number } = {}): FeedSnapshot {
+    const at = this.now();
+    const cutoff = at - (options.maxAgeMs ?? 24 * 60 * 60_000);
+    const limit = options.limit ?? 20_000;
+    const tokens: FeedSnapshot['tokens'][number][] = [];
+    // The map is in the order of last use, so the newest are at its end.
+    for (const entry of [...this.entries.values()].reverse()) {
+      if (tokens.length >= limit || entry.touchedAt < cutoff) break;
+      const token: Record<string, unknown> = { ...entry.token };
+      delete token.stats;
+      delete token.spark;
+      tokens.push({ token: token as unknown as FeedToken, peakMc: entry.peakMc, peakAt: entry.peakAt, lastTradeAt: entry.lastTradeAt, touchedAt: entry.touchedAt });
+    }
+    return { version: 1, savedAt: at, tokens };
+  }
+
+  /**
+   * Takes back the tokens of a snapshot no older than `maxAgeMs` (default a day). A token the feed has already sent
+   * since the start is kept as the feed has it. Calls no listener. Returns how many tokens were taken back.
+   */
+  importSnapshot(snapshot: FeedSnapshot, options: { readonly maxAgeMs?: number } = {}): number {
+    if (snapshot?.version !== 1 || !Array.isArray(snapshot.tokens) || this.now() - snapshot.savedAt > (options.maxAgeMs ?? 24 * 60 * 60_000)) return 0;
+    let n = 0;
+    // Oldest first, so the map's order of last use comes back as it was.
+    for (const row of [...snapshot.tokens].reverse()) {
+      const token = row?.token;
+      if (!token || typeof token.address !== 'string' || typeof token.symbol !== 'string' || this.entries.has(token.address)) continue;
+      if (this.entries.size >= this.maxTokens) break;
+      this.entries.set(token.address, {
+        token,
+        recent: [],
+        trimmedAt: null,
+        statsAt: null,
+        peakMc: finite(row.peakMc) ? row.peakMc : null,
+        peakAt: finite(row.peakAt) ? row.peakAt : null,
+        lastTradeAt: finite(row.lastTradeAt) ? row.lastTradeAt : null,
+        touchedAt: finite(row.touchedAt) ? row.touchedAt : snapshot.savedAt,
+      });
+      n += 1;
+    }
+    return n;
   }
 
   private touch(address: string, token?: FeedToken): Entry | null {
@@ -173,15 +244,19 @@ export class FeedState implements DataSource {
     this.stats.events += 1;
     this.stats.lastEventAt = this.now();
     switch (event.type) {
-      case 'token_upsert':
-        this.touch(event.token.address, event.token);
+      case 'token_upsert': {
+        const before = this.entries.get(event.token.address)?.token ?? null;
+        const entry = this.touch(event.token.address, event.token);
+        if (entry) this.changed(before, entry.token);
         return;
+      }
       case 'column_reset':
         for (const token of event.tokens) if (token && typeof token.address === 'string') this.touch(token.address, token);
         return;
       case 'token_patch': {
         const entry = this.touch(event.address);
         if (!entry) return;
+        const before = entry.token;
         const { audit, risk, ...rest } = event.patch;
         entry.token = {
           ...entry.token,
@@ -191,13 +266,16 @@ export class FeedState implements DataSource {
           address: entry.token.address,
         };
         this.noted(entry, rest);
+        this.changed(before, entry.token);
         return;
       }
       case 'token_tick': {
         const entry = this.touch(event.address);
         if (!entry) return;
+        const before = entry.token;
         entry.token = { ...entry.token, price: event.price, ...(event.mc !== null ? { mc: event.mc } : {}) };
         this.notePeak(entry, event.mc, finite(event.at) && event.at > 0 ? event.at : this.now());
+        this.changed(before, entry.token);
         return;
       }
       case 'market_trade': {
@@ -329,5 +407,11 @@ export class FeedState implements DataSource {
 
   lastTradeAt(address: string): number | null {
     return this.entries.get(address)?.lastTradeAt ?? null;
+  }
+
+  /** The wallet that created the token, when the feed said. */
+  creatorOf(address: string): string | null {
+    const creator = this.entries.get(address)?.token.creator;
+    return typeof creator === 'string' && creator ? creator : null;
   }
 }

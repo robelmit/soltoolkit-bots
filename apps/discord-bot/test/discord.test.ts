@@ -2,7 +2,7 @@
 
 import { FeedState, MemoryStore, buyOf, linkTemplates, parseButtons, type FeedTrade } from '@soltoolkit/bot-core';
 import { describe, expect, it } from 'vitest';
-import { COLORS, buyPayload, tokenPayload } from '../src/cards';
+import { COLORS, alertPayload, buyPayload, tokenPayload } from '../src/cards';
 import { COMMANDS, handleButton, handleCommand, newRefreshGate, type CommandInput } from '../src/commands';
 import { readConfig } from '../src/config';
 
@@ -25,9 +25,9 @@ function harness() {
 
 describe('commands', () => {
   it('registers every command for servers only, the admin ones for managers', () => {
-    expect(COMMANDS.map((c) => c.name)).toEqual(['ca', 'trending', 'track', 'minbuy', 'untrack', 'buybot', 'help']);
+    expect(COMMANDS.map((c) => c.name)).toEqual(['ca', 'trending', 'track', 'minbuy', 'untrack', 'buybot', 'calls', 'launches', 'graduations', 'help']);
     expect(COMMANDS.every((c) => c.dm_permission === false)).toBe(true);
-    expect(COMMANDS.filter((c) => c.default_member_permissions).map((c) => c.name)).toEqual(['track', 'minbuy', 'untrack']);
+    expect(COMMANDS.filter((c) => c.default_member_permissions).map((c) => c.name)).toEqual(['track', 'minbuy', 'untrack', 'launches', 'graduations']);
     for (const command of COMMANDS) expect(command.description.length).toBeLessThanOrEqual(100);
   });
 
@@ -135,6 +135,49 @@ describe('commands', () => {
     expect((await h.store.get(GUILD))!.buyBot).toBeNull();
     expect(h.text(await h.run('buybot'))).toContain('No token is tracked here');
     expect(h.text(await h.run('nope'))).toContain('Unknown command');
+  });
+});
+
+describe('calls and alerts', () => {
+  it('credits the first caller of a token in a server, and ranks the calls', async () => {
+    const h = harness();
+    h.list();
+    const first = await h.run('ca', { address: MINT, userId: '7', userName: '@ana' });
+    // Discord's renderer puts a zero-width space after every @, so nothing in a card is a mention.
+    expect(h.text(first)).toContain('🏆 First call: ana @​ `4K`');
+    h.feed.apply({ type: 'token_tick', ts: 1, address: MINT, price: 0.00002, mc: 20_000, at: 1 });
+    h.tick(3_600_000);
+    expect(h.text(await h.run('ca', { address: MINT, userId: '8', userName: 'bo' }))).toContain('🏆 ana @​ `4K` · 5.0x · 1h');
+    const calls = await h.run('calls', { canManage: false });
+    expect(calls.ephemeral).toBe(false);
+    expect(h.text(calls)).toContain('🥇 [ZOP]');
+  });
+
+  it('lets only managers switch alerts, into the channel asked for', async () => {
+    const h = harness();
+    expect(h.text(await h.run('launches', { mode: 'on', canManage: false }))).toContain('manage the server');
+    expect(h.text(await h.run('launches', { mode: 'on', launchpad: 'nowhere' }))).toContain('not a launchpad');
+    expect(h.text(await h.run('launches', { mode: 'on', minMc: 500 }))).toContain('from $1K');
+    const on = await h.run('launches', { mode: 'on', minMc: 50_000, launchpad: 'pump.fun', channel: '222' });
+    expect(h.text(on)).toContain('reach $50K on pump.fun');
+    expect(h.text(on)).toContain(`https://discord.com/channels/${GUILD}/222`);
+    await h.run('graduations', { mode: 'on' });
+    expect((await h.store.get(GUILD))!.alerts).toMatchObject({ launches: { minMc: 50_000, launchpad: 'pumpfun' }, graduations: { on: true }, channelId: '222' });
+    expect(h.changes()).toBe(2);
+    await h.run('launches', { mode: 'off' });
+    expect((await h.store.get(GUILD))!.alerts).toMatchObject({ launches: null, graduations: { on: true } });
+  });
+
+  it('colours an alert by its kind, without the card buttons on a dev sale', () => {
+    const h = harness();
+    const token = { address: MINT, symbol: 'ZOP', name: 'Zop', launchpad: 'pumpfun', mc: 60_000, m5: { trades: 0, buys: 0, volumeUsd: null, priceChangePct: null }, lastTradeAt: null };
+    const community = { id: GUILD, title: null, buyBot: null, alerts: { launches: { minMc: 50_000, launchpad: null }, graduations: { on: true as const }, setBy: null, setAt: 0 }, left: false, updatedAt: 0 };
+    const launch = alertPayload({ kind: 'launch', address: MINT, at: 0 }, token, community, h.links, 0);
+    expect(launch.embeds![0]!.description).toContain('🚀 **New launch past $50K**');
+    expect(launch.components).toHaveLength(2);
+    const dev = alertPayload({ kind: 'devSold', address: MINT, at: 0 }, token, community, h.links, 0);
+    expect(dev.embeds![0]!.color).toBe(0xef4444);
+    expect(dev.components).toHaveLength(1);
   });
 });
 

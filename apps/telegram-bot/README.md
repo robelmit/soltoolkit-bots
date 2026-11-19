@@ -4,7 +4,7 @@ A self-hosted Telegram bot for token communities on Solana launchpads. It reads 
 
 - **Token card.** Paste a token address, or send `/ca <address>`. Price, market cap and its peak, liquidity, the hour and the day, buys and sells, checks, holders, socials and a row of short links, with **Copy CA** and **Refresh** buttons under it. Refresh redraws the same message.
 - **Trending.** `/trending` lists the most traded launchpad tokens of the last five minutes.
-- **Buy bot.** An admin sends `/track <address>`; every buy of that token at or above a size is posted. Busy spells are merged into one post.
+- **Buy bot.** An admin sends `/track <address>`; every buy of that token at or above a size is posted. Busy spells are merged into one post, and the group is warned when the token's creator sells.
 
 The bot never trades, holds no keys, and asks nobody for a wallet.
 
@@ -36,6 +36,9 @@ With Redis between them, the feed and any number of bots run as separate process
 | `/buymedia` | Admins | Reply to a picture or a GIF to post it with every buy; `/buymedia off` removes it |
 | `/untrack` | Admins | Turn the buy bot off |
 | `/buybot` | Anyone | The buy bot's settings, and whether trades of the token are coming in |
+| `/calls` | Anyone | The best calls in this group in the last 7 days |
+| `/launches on [market cap] [launchpad]` | Admins | Post tokens younger than an hour the first time they reach a market cap (default $20K), from one launchpad or all; `/launches off` stops it, `/launches` shows the alerts |
+| `/graduations on`, `/graduations off` | Admins | Post tokens that finish their bonding curve |
 | `/help` | Anyone | What the bot does |
 
 Admin commands are checked with Telegram's `getChatMember`. They are not trusted from the message.
@@ -49,6 +52,7 @@ Admin commands are checked with Telegram's `getChatMember`. They are not trusted
 | `REDIS_URL` | — | Required with `FEED=redis` |
 | `FEED_STREAM_KEY` | `stream:market:solana` | The feed's stream |
 | `STORE_PATH` | `./data/telegram.json` | The file the groups' settings are kept in |
+| `SNAPSHOT_PATH` | `./data/feed-snapshot.json` | Where the tokens the bot knows are kept across restarts (saved every five minutes and at shutdown, read at start when less than a day old); `off` for none |
 | `BOT_BUTTONS` | `Explorer` → Solscan | Buttons under cards and buy posts: `Label|https://…{address}`, comma separated, at most five |
 | `LINK_ROW` | `EXP` → Solscan, `DS` → DexScreener, `X` → an X search | The short links inside a card: `CODE|https://…{address}`, comma separated, at most ten, codes up to 12 characters; `off` for none |
 | `HOLDER_MAP_URL` | the soltoolkit Live site | The card's 🫧 holder map link, `https://…{address}`; `off` leaves it out |
@@ -64,6 +68,9 @@ A missing or malformed setting stops the bot at start and says which one.
 - **Buy posts.** At most one every ten seconds per group. A buy older than a minute when the bot reads it is skipped.
 - **Unasked cards.** One card per address every two minutes per group, at most ten cards a minute per group.
 - **Refresh.** A card is redrawn at most once in 15 seconds and four times a minute; a press in between says so instead.
+- **Calls.** The first card of a token in a group (asked with `/ca` or a pasted address) notes who called it and the market cap then. Later cards credit them ("🏆 ana @ 10K · 4.0x · 2d"), and `/calls` ranks the last week's calls by how far they went. Names are printed as text, never as mentions. At most 300 calls are kept per group, for 30 days.
+- **Alerts.** At most one launch alert and one graduation alert a minute per group; an alert that could not go out within three minutes is dropped. A token is posted at most once per group. A dev-sold warning goes out at once, for the token the buy bot tracks.
+- **Restarts.** The bot saves the tokens it knows and reads them back at start, so a card works for a token listed before the restart. Window figures and trades are not saved; they come back from the feed.
 - **Markup.** Messages are MarkdownV2 with every outside text escaped. If Telegram refuses the markup, the message is sent again as plain text.
 - **Groups that change.** When a group becomes a supergroup, its settings move to the new id. When the bot is removed, its buy bot stops.
 - **Dollar figures** come from the feed. Give the feed a SOL price, or buys have no dollar value and none is posted.
@@ -81,7 +88,7 @@ A missing or malformed setting stops the bot at start and says which one.
 pnpm --filter @soltoolkit/telegram-bot test
 ```
 
-18 tests run the bot against a fake Telegram that records every API call. The bot was not run against the real Telegram API in this repository's tests; that needs your own bot token.
+20 tests run the bot against a fake Telegram that records every API call. The bot was not run against the real Telegram API in this repository's tests; that needs your own bot token.
 
 ## Licence
 

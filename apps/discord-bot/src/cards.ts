@@ -9,7 +9,7 @@
  * card in place). Their ids are `c:<address>` and `r:<address>`.
  */
 
-import { buttonsFor, buyPostCard, isWhale, toDiscord, tokenCard, trendingCard, type BuyPost, type CardExtras, type Line, type LinkTemplates, type TokenView } from '@soltoolkit/bot-core';
+import { alertCard, buttonsFor, isDevAlert, buyPostCard, isWhale, toDiscord, tokenCard, trendingCard, type Alert, type BuyPost, type CardExtras, type CommunityRecord, type Line, type LinkTemplates, type TokenView } from '@soltoolkit/bot-core';
 import { ButtonStyle, ComponentType, type APIActionRowComponent, type APIButtonComponent, type APIEmbed } from 'discord.js';
 
 /** Side-bar colours of the embeds. */
@@ -81,6 +81,17 @@ export function tokenPayload(token: TokenView, links: LinkTemplates, now: number
 }
 
 export const trendingPayload = (tokens: readonly TokenView[], links: LinkTemplates): Payload => ({ embeds: [embed(trendingCard(tokens, links), COLORS.card)], allowedMentions: NO_MENTIONS });
+
+const ALERT_COLORS: Readonly<Record<Alert['kind'], number>> = { launch: 0xf59e0b, graduation: 0x8b5cf6, devSell: 0xef4444, devSold: 0xef4444 };
+
+/** An alert: its heading over the token's card, coloured by kind, with the card's buttons (none of the bot's own on a dev sale). */
+export function alertPayload(alert: Alert, token: TokenView, community: CommunityRecord, links: LinkTemplates, now: number, options: TokenPayloadOptions = {}): Payload {
+  const card = embed(alertCard(alert, token, community, links, now, options), ALERT_COLORS[alert.kind]);
+  const image = httpsImage(token.image);
+  if (image && !isDevAlert(alert.kind)) card.thumbnail = { url: image };
+  if (options.poweredBy) card.footer = { text: options.poweredBy.slice(0, 120) };
+  return { embeds: [card], components: [...buttonRow(links, token.address), ...(isDevAlert(alert.kind) ? [] : [actionRow(token.address)])], allowedMentions: NO_MENTIONS };
+}
 
 export function buyPayload(post: BuyPost, links: LinkTemplates): Payload {
   const whale = post.buys.length === 1 && isWhale(post.buys[0]!.usd, post.config.minUsd);
