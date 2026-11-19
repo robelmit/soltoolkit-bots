@@ -74,6 +74,72 @@ describe('FeedState', () => {
     expect(await state.trending(5)).toEqual([]);
   });
 
+  it('knows a volume only when every trade in it had a dollar value', async () => {
+    const state = new FeedState({ now: () => 5_000 });
+    state.apply(listed('Mint1'));
+    state.apply({ type: 'market_trade', ts: 1, trade: trade({ at: 1_000, usd: 100 }) });
+    expect((await state.token('Mint1'))!.m5.volumeUsd).toBe(100);
+    state.apply({ type: 'market_trade', ts: 1, trade: trade({ at: 2_000, usd: null }) });
+    expect((await state.token('Mint1'))!.m5.volumeUsd).toBeNull();
+  });
+
+  it("shows the feed's hour and day while they are fresh, and its own hour only once it has watched a whole one", async () => {
+    const start = 10_000_000;
+    let now = start;
+    const state = new FeedState({ now: () => now });
+    state.apply(listed('Mint1'));
+    state.apply({ type: 'token_patch', ts: 1, address: 'Mint1', patch: { stats: { '1h': { buys: 25, sells: 30, volumeUsd: 1_539, priceChangePct: -11.7, buyers: 20 }, '24h': { buys: 134, sells: 113, volumeUsd: 6_580, priceChangePct: 48 } } } });
+    expect((await state.token('Mint1'))!.h1).toEqual({ buys: 25, sells: 30, volumeUsd: 1_539, priceChangePct: -11.7 });
+    expect((await state.token('Mint1'))!.h24).toMatchObject({ volumeUsd: 6_580, priceChangePct: 48 });
+    // Figures the feed has not refreshed in a while are not shown as the last hour.
+    now += 6 * 60_000;
+    expect((await state.token('Mint1'))!.h1).toBeNull();
+    expect((await state.token('Mint1'))!.h24).toBeNull();
+    now = start + 60 * 60_000 + 1_000;
+    state.apply({ type: 'market_trade', ts: 1, trade: trade({ at: now - 20 * 60_000, usd: 100, price: 1 }) });
+    state.apply({ type: 'market_trade', ts: 1, trade: trade({ at: now - 2 * 60_000, usd: 50, price: 2, side: 'sell' }) });
+    expect((await state.token('Mint1'))!.h1).toEqual({ buys: 1, sells: 1, volumeUsd: 150, priceChangePct: 100 });
+    expect((await state.token('Mint1'))!.m5).toMatchObject({ trades: 1, buys: 0, volumeUsd: 50 });
+  });
+
+  it('says nothing about the hour when the per-token cap dropped trades from it', async () => {
+    let now = 0;
+    const state = new FeedState({ now: () => now, maxTradesPerToken: 2 });
+    now = 2 * 60 * 60_000;
+    state.apply(listed('Mint1'));
+    for (const minutes of [30, 20, 10]) state.apply({ type: 'market_trade', ts: 1, trade: trade({ at: now - minutes * 60_000 }) });
+    expect((await state.token('Mint1'))!.h1).toBeNull();
+  });
+
+  it('keeps the highest market cap with its time, and the feed\'s higher one without', async () => {
+    let now = 1_000;
+    const state = new FeedState({ now: () => now });
+    state.apply({ type: 'token_upsert', ts: 1, token: { address: 'Mint1', symbol: 'A', name: 'A', mc: 1_000, price: 0.001 } });
+    expect((await state.token('Mint1'))!.peak).toEqual({ mc: 1_000, at: 1_000 });
+    now = 2_000;
+    state.apply({ type: 'market_trade', ts: 1, trade: trade({ at: 1_500, mc: 5_000 }) });
+    state.apply({ type: 'token_tick', ts: 1, address: 'Mint1', price: 0.002, mc: 2_000, at: 1_800 });
+    expect((await state.token('Mint1'))!.peak).toEqual({ mc: 5_000, at: 1_500 });
+    state.apply({ type: 'token_patch', ts: 1, address: 'Mint1', patch: { ath: 0.01 } });
+    expect((await state.token('Mint1'))!.peak).toEqual({ mc: 10_000, at: null });
+    // A side-pool trade prices nothing, so it is no peak either.
+    state.apply({ type: 'market_trade', ts: 1, trade: trade({ at: 1_900, mc: 99_000, offMarket: true }) });
+    expect((await state.token('Mint1'))!.peak!.mc).toBe(10_000);
+  });
+
+  it('ranks a token among the most traded of the last five minutes', async () => {
+    const state = new FeedState({ now: () => 5_000 });
+    state.apply(listed('Mint1'));
+    state.apply(listed('Mint2'));
+    state.apply(listed('Quiet'));
+    state.apply({ type: 'market_trade', ts: 1, trade: trade({ usd: 10 }) });
+    state.apply({ type: 'market_trade', ts: 1, trade: trade({ address: 'Mint2', usd: 900 }) });
+    expect(await state.rank('Mint2')).toBe(1);
+    expect(await state.rank('Mint1')).toBe(2);
+    expect(await state.rank('Quiet')).toBeNull();
+    expect(await state.rank('NeverSeen')).toBeNull();
+  });
+
   it('reports the price change across the window from priced trades', async () => {
     const state = new FeedState({ now: () => 5_000 });
     state.apply(listed('Mint1'));

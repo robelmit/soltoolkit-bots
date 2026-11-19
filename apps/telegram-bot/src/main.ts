@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   const config = readConfig(process.env);
   const store = await JsonFileStore.open(config.storePath);
   const feed = new FeedState();
-  const { bot, engine } = createBot({ token: config.token, source: feed, store, links: config.links, log, poweredBy: config.poweredBy });
+  const { bot, engine } = createBot({ token: config.token, source: feed, store, links: config.links, log, poweredBy: config.poweredBy, cardImage: config.cardImage });
   feed.onTrade(engine.onTrade);
 
   const stop = new AbortController();

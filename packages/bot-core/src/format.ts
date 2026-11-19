@@ -42,6 +42,17 @@ export function fmtUsd(value: number | null | undefined): string {
   return `${sign}$${scaled}`;
 }
 
+/** A short dollar figure for a headline, without the sign: `950`, `4.4K`, `12.3M`. */
+export function fmtShort(value: number | null | undefined): string {
+  if (!known(value)) return DASH;
+  const abs = Math.abs(value);
+  const sign = value < 0 ? '-' : '';
+  if (abs >= 1e9) return `${sign}${trimZeros((abs / 1e9).toFixed(2))}B`;
+  if (abs >= 1e6) return `${sign}${trimZeros((abs / 1e6).toFixed(1))}M`;
+  if (abs >= 1e3) return `${sign}${trimZeros((abs / 1e3).toFixed(1))}K`;
+  return `${sign}${trimZeros(abs.toFixed(abs >= 1 ? 0 : 2)) || '0'}`;
+}
+
 export function fmtPrice(value: number | null | undefined): string {
   if (!known(value)) return DASH;
   if (value >= 1000) return `$${Math.round(value).toLocaleString('en-US')}`;

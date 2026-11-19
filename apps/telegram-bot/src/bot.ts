@@ -39,10 +39,11 @@ import {
   type LinkTemplates,
   type Logger,
   type Store,
+  type TokenView,
 } from '@soltoolkit/bot-core';
-import { Bot, type Context } from 'grammy';
+import { Bot, GrammyError, type Context } from 'grammy';
 import type { UserFromGetMe } from 'grammy/types';
-import { MD, Outbox, isParseError, keyboardOf, type OutboxLimits } from './outbox';
+import { MD, Outbox, REFRESH_PREFIX, isParseError, keyboardOf, previewOf, type CardActions, type OutboxLimits } from './outbox';
 
 export interface BotOptions {
   readonly token: string;
@@ -57,6 +58,8 @@ export interface BotOptions {
   readonly sleep?: (ms: number) => Promise<void>;
   /** A credit line for whoever runs the bot, shown at the end of the welcome and /help (`BOT_POWERED_BY`). */
   readonly poweredBy?: string | null;
+  /** Show the token's picture small above a card (`BOT_CARD_IMAGE=1`). */
+  readonly cardImage?: boolean;
 }
 
 export interface TelegramBot {
@@ -125,17 +128,29 @@ export function createBot(options: BotOptions): TelegramBot {
   });
 
   /** A direct reply to a command, with the plain-text fallback when Telegram refuses the markup. */
-  const reply = async (ctx: Context, lines: readonly Line[], buttons?: readonly LinkButton[]): Promise<void> => {
-    const keyboard = keyboardOf(buttons);
+  const reply = async (ctx: Context, lines: readonly Line[], buttons?: readonly LinkButton[], extra: { actions?: CardActions; previewUrl?: string | null } = {}): Promise<void> => {
+    const keyboard = keyboardOf(buttons, extra.actions);
     const markup = keyboard ? { reply_markup: keyboard } : {};
+    const preview = previewOf(extra.previewUrl);
     try {
-      await ctx.reply(toMarkdownV2(lines), { ...MD, ...markup });
+      await ctx.reply(toMarkdownV2(lines), { ...MD, ...preview, ...markup });
     } catch (error) {
       if (!isParseError(error)) throw error;
       log.warn('markdown refused, sent plain', { chat: chatKey(ctx) });
-      await ctx.reply(toPlain(lines), { link_preview_options: { is_disabled: true }, ...markup });
+      await ctx.reply(toPlain(lines), { ...preview, ...markup });
     }
   };
+
+  /** A token's card with its rank, its buttons and, when asked for, its picture. */
+  const cardOf = async (token: TokenView): Promise<{ lines: Line[]; buttons: LinkButton[]; actions: CardActions; previewUrl: string | null }> => ({
+    lines: tokenCard(token, links, now(), { rank: (await source.rank?.(token.address)) ?? null }),
+    buttons: buttonsFor(links, token.address),
+    actions: { copy: token.address, refresh: token.address },
+    previewUrl: options.cardImage ? (token.image ?? null) : null,
+  });
+
+  /** A card is redrawn at most once in 15 seconds, and four times a minute. */
+  const refreshGate = new CardLimiter(4, 15_000, now);
 
   /** Whether the sender is the group's creator or one of its administrators, by Telegram's own word. */
   const isAdmin = async (ctx: Context): Promise<boolean> => {
@@ -216,15 +231,40 @@ export function createBot(options: BotOptions): TelegramBot {
       if (explicit) await reply(ctx, [['The feed has not seen ', { code: address }, ' yet. It lists tokens of the launchpads it follows from the moment the bot started.']]);
       return;
     }
-    const lines = tokenCard(token, links, now());
-    const buttons = buttonsFor(links, token.address);
-    if (explicit) return void (await reply(ctx, lines, buttons));
+    const { lines, buttons, actions, previewUrl } = await cardOf(token);
+    if (explicit) return void (await reply(ctx, lines, buttons, { actions, previewUrl }));
     // The bot handles updates one at a time, so an unasked card waits at most 1.5 s for a slot and is dropped past it.
-    const result = await outbox.text(chatKey(ctx), lines, { kind: 'card', buttons, maxWaitMs: 1_500 });
+    const result = await outbox.text(chatKey(ctx), lines, { kind: 'card', buttons, actions, previewUrl, maxWaitMs: 1_500 });
     if (result.outcome === 'gone') await store.upsert(chatKey(ctx), { left: true }).catch(() => undefined);
   }
 
   bot.command(['ca', 't'], async (ctx) => card(ctx, argOf(ctx), true));
+
+  // Refresh under a card: the same message, redrawn with what the feed knows now.
+  bot.callbackQuery(new RegExp(`^${REFRESH_PREFIX}(.+)$`), async (ctx) => {
+    const address = detectAddress(ctx.match[1] ?? '');
+    const message = ctx.callbackQuery.message;
+    if (!address || !message) return void (await ctx.answerCallbackQuery());
+    if (!refreshGate.allow(`${message.chat.id}:${message.message_id}`, address)) return void (await ctx.answerCallbackQuery({ text: 'Updated a moment ago. Try again in a few seconds.' }));
+    const token = await source.token(address);
+    if (!token) return void (await ctx.answerCallbackQuery({ text: 'The feed no longer holds this token, so the card stays as it was.' }));
+    const { lines, buttons, actions, previewUrl } = await cardOf(token);
+    const keyboard = keyboardOf(buttons, actions);
+    const markup = keyboard ? { reply_markup: keyboard } : {};
+    const preview = previewOf(previewUrl);
+    try {
+      try {
+        await ctx.editMessageText(toMarkdownV2(lines), { ...MD, ...preview, ...markup });
+      } catch (error) {
+        if (!isParseError(error)) throw error;
+        await ctx.editMessageText(toPlain(lines), { ...preview, ...markup });
+      }
+    } catch (error) {
+      // Nothing changed since the last draw: Telegram refuses the edit, and the card is already current.
+      if (!(error instanceof GrammyError && /message is not modified/i.test(error.description))) throw error;
+    }
+    await ctx.answerCallbackQuery({ text: 'Updated' });
+  });
 
   bot.command('trending', async (ctx) => {
     await reply(ctx, trendingCard(await source.trending(TRENDING_COUNT), links));

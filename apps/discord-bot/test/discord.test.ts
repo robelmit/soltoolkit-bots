@@ -3,7 +3,7 @@
 import { FeedState, MemoryStore, buyOf, linkTemplates, parseButtons, type FeedTrade } from '@soltoolkit/bot-core';
 import { describe, expect, it } from 'vitest';
 import { COLORS, buyPayload, tokenPayload } from '../src/cards';
-import { COMMANDS, handleCommand, type CommandInput } from '../src/commands';
+import { COMMANDS, handleButton, handleCommand, newRefreshGate, type CommandInput } from '../src/commands';
 import { readConfig } from '../src/config';
 
 const MINT = 'FWFxnxR1Esvv6Ebcntr357ri1mucV5FiKTG1kEiBpump';
@@ -20,7 +20,7 @@ function harness() {
   const text = (reply: Awaited<ReturnType<typeof run>>): string => reply.payload.embeds?.[0]?.description ?? '';
   const list = (symbol = 'ZOP', name = 'Zop'): void => feed.apply({ type: 'token_upsert', ts: now, token: { address: MINT, symbol, name, decimals: 6, stage: 'new', launchpad: 'pumpfun', price: 0.000004, mc: 4_000 } });
   const trade = (over: Partial<FeedTrade> = {}): FeedTrade => ({ address: MINT, tx: 'sig', at: now, side: 'buy', amountToken: '5000000', amountNative: '500000000', usd: 100, price: 0.00002, mc: 20_000, maker: 'Maker1111111111111111111111111111111111111', ...over });
-  return { feed, store, links, run, text, list, trade, changes: () => changes, tick: (ms: number) => (now += ms) };
+  return { feed, store, links, run, text, list, trade, changes: () => changes, tick: (ms: number) => (now += ms), now: () => now };
 }
 
 describe('commands', () => {
@@ -47,9 +47,40 @@ describe('commands', () => {
     h.list();
     const reply = await h.run('ca', { address: MINT, canManage: false });
     expect(reply.ephemeral).toBe(false);
-    expect(h.text(reply)).toContain('**ZOP** — Zop');
+    expect(h.text(reply)).toContain(`🧪 [Zop](<https://solscan.io/token/${MINT}>)`);
+    expect(h.text(reply)).toContain('💎 MC: `$4K`');
     expect(reply.payload.components?.[0]?.components[0]).toMatchObject({ label: 'Chart', url: `https://example.com/c/${MINT}` });
+    expect(reply.payload.components?.[1]?.components.map((b) => ('custom_id' in b ? b.custom_id : null))).toEqual([`c:${MINT}`, `r:${MINT}`]);
     expect(reply.payload.allowedMentions).toEqual({ parse: [] });
+  });
+
+  it('answers Copy CA with the bare address, and redraws the card on Refresh at most once in 15 seconds', async () => {
+    const h = harness();
+    h.list();
+    const gate = newRefreshGate(() => h.now());
+    const deps = { source: h.feed, store: h.store, links: h.links, changed: () => undefined, now: () => h.now(), gate, poweredBy: 'Powered by Example' };
+    const copy = await handleButton({ customId: `c:${MINT}`, messageId: '1' }, deps);
+    expect(copy).toEqual({ kind: 'reply', payload: { content: MINT, allowedMentions: { parse: [] } } });
+    h.feed.apply({ type: 'token_tick', ts: 1, address: MINT, price: 0.00005, mc: 50_000, at: 1 });
+    const fresh = await handleButton({ customId: `r:${MINT}`, messageId: '1' }, deps);
+    expect(fresh?.kind).toBe('update');
+    expect(fresh!.payload.embeds![0]!.description).toContain('💎 MC: `$50K`');
+    expect(fresh!.payload.embeds![0]!.footer).toEqual({ text: 'Powered by Example' });
+    expect((await handleButton({ customId: `r:${MINT}`, messageId: '1' }, deps))!.payload.embeds![0]!.description).toContain('a moment ago');
+    h.tick(15_001);
+    expect((await handleButton({ customId: `r:${MINT}`, messageId: '1' }, deps))?.kind).toBe('update');
+    expect(await handleButton({ customId: 'other', messageId: '1' }, deps)).toBeNull();
+    expect(await handleButton({ customId: 'r:not-an-address', messageId: '1' }, deps)).toBeNull();
+  });
+
+  it('colours a card by the price move and shows the token picture', () => {
+    const h = harness();
+    const base = { address: MINT, symbol: 'ZOP', name: 'Zop', m5: { trades: 2, buys: 1, volumeUsd: 10, priceChangePct: 5 }, lastTradeAt: null };
+    expect(tokenPayload(base, h.links, 0).embeds![0]!.color).toBe(COLORS.up);
+    expect(tokenPayload({ ...base, h1: { buys: 1, sells: 1, volumeUsd: 1, priceChangePct: -3 } }, h.links, 0).embeds![0]!.color).toBe(COLORS.down);
+    expect(tokenPayload({ ...base, m5: { ...base.m5, priceChangePct: null } }, h.links, 0).embeds![0]!.color).toBe(COLORS.card);
+    expect(tokenPayload({ ...base, image: 'https://img.example/a.png' }, h.links, 0).embeds![0]!.thumbnail).toEqual({ url: 'https://img.example/a.png' });
+    expect(tokenPayload({ ...base, image: 'http://img.example/a.png' }, h.links, 0).embeds![0]!.thumbnail).toBeUndefined();
   });
 
   it('tells only the asker when the address is wrong or the feed has not seen the token', async () => {

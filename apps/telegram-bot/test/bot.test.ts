@@ -24,13 +24,13 @@ interface Call {
   payload: Record<string, unknown>;
 }
 
-function harness(options: { refuse?: (call: Call) => GrammyError | null; poweredBy?: string } = {}) {
+function harness(options: { refuse?: (call: Call) => GrammyError | null; poweredBy?: string; cardImage?: boolean } = {}) {
   let now = 1_000_000;
   let updateId = 0;
   const feed = new FeedState({ now: () => now });
   const store = new MemoryStore(() => now);
   const links = linkTemplates({ buttons: parseButtons('Chart|https://example.com/c/{address}') });
-  const { bot, engine, outbox } = createBot({ token: TOKEN, source: feed, store, links, botInfo, now: () => now, sleep: async (ms) => void (now += ms), poweredBy: options.poweredBy ?? null });
+  const { bot, engine, outbox } = createBot({ token: TOKEN, source: feed, store, links, botInfo, now: () => now, sleep: async (ms) => void (now += ms), poweredBy: options.poweredBy ?? null, cardImage: options.cardImage ?? false });
   feed.onTrade(engine.onTrade);
   const calls: Call[] = [];
   bot.api.config.use(async (_prev, method, payload) => {
@@ -64,10 +64,45 @@ describe('token cards', () => {
     h.list(MINT);
     await h.say(`/ca ${MINT}`);
     expect(h.sent()).toHaveLength(1);
-    expect(h.lastText()).toContain('*ZOP* — Zop');
+    expect(h.lastText()).toContain(`🧪 [Zop](https://solscan.io/token/${MINT})`);
     expect(h.lastText()).toContain(`\`${MINT}\``);
     expect(h.sent()[0]!.payload.parse_mode).toBe('MarkdownV2');
-    expect(JSON.stringify(h.sent()[0]!.payload.reply_markup)).toContain(`https://example.com/c/${MINT}`);
+    const keyboard = JSON.stringify(h.sent()[0]!.payload.reply_markup);
+    expect(keyboard).toContain(`https://example.com/c/${MINT}`);
+    // Copy CA copies the bare address; Refresh calls back with it.
+    expect(keyboard).toContain(`"copy_text":{"text":"${MINT}"}`);
+    expect(keyboard).toContain(`"callback_data":"r:${MINT}"`);
+    expect(h.sent()[0]!.payload.link_preview_options).toEqual({ is_disabled: true });
+  });
+
+  it('redraws a card in place on Refresh, at most once in 15 seconds', async () => {
+    const h = harness();
+    h.list(MINT);
+    await h.say(`/ca ${MINT}`);
+    const press = async (): Promise<void> =>
+      h.bot.handleUpdate({
+        update_id: 9_000 + h.calls.length,
+        callback_query: { id: 'q', chat_instance: 'c', from: { id: MEMBER, is_bot: false, first_name: 'U' }, data: `r:${MINT}`, message: { message_id: 55, date: 0, chat: { id: GROUP, type: 'supergroup', title: 'G' }, text: 'old' } },
+      } as unknown as Update);
+    h.feed.apply({ type: 'token_tick', ts: 1, address: MINT, price: 0.00005, mc: 50_000, at: 1 });
+    await press();
+    const edit = h.calls.find((c) => c.method === 'editMessageText')!;
+    expect(edit.payload).toMatchObject({ chat_id: GROUP, message_id: 55, parse_mode: 'MarkdownV2' });
+    expect(String(edit.payload.text)).toContain('💎 MC: $50K');
+    expect(h.calls.at(-1)).toMatchObject({ method: 'answerCallbackQuery', payload: { text: 'Updated' } });
+    await press();
+    expect(h.calls.filter((c) => c.method === 'editMessageText')).toHaveLength(1);
+    expect(h.calls.at(-1)!.payload.text).toContain('a moment ago');
+    h.tick(15_001);
+    await press();
+    expect(h.calls.filter((c) => c.method === 'editMessageText')).toHaveLength(2);
+  });
+
+  it('shows the token picture above a card when the operator turned it on', async () => {
+    const h = harness({ cardImage: true });
+    h.feed.apply({ type: 'token_upsert', ts: 1, token: { address: MINT, symbol: 'ZOP', name: 'Zop', image: 'https://img.example/zop.png' } });
+    await h.say(`/ca ${MINT}`);
+    expect(h.sent()[0]!.payload.link_preview_options).toEqual({ url: 'https://img.example/zop.png', prefer_small_media: true, show_above_text: true });
   });
 
   it('answers a pasted address once in two minutes, and stays quiet about ordinary talk', async () => {
@@ -98,7 +133,7 @@ describe('token cards', () => {
     await h.say(`/ca ${MINT}`);
     expect(h.sent()).toHaveLength(2);
     expect(h.sent()[1]!.payload.parse_mode).toBeUndefined();
-    expect(h.lastText()).toContain('ZOP — Zop');
+    expect(h.lastText()).toContain(`🧪 Zop (https://solscan.io/token/${MINT})`);
   });
 
   it('lists the most traded tokens', async () => {

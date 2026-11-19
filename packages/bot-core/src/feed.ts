@@ -7,14 +7,25 @@
  * `column_reset` carries). A token it never saw is `null`, not an empty card.
  */
 
-import type { DataSource, FeedEvent, FeedToken, FeedTrade, TokenView, Window5m } from './types';
+import type { DataSource, FeedEvent, FeedToken, FeedTrade, FeedWindowStats, Peak, TokenView, Window5m, WindowFigures } from './types';
 
 export const WINDOW_MS = 5 * 60_000;
+/** The bot keeps an hour of trades itself, for chains whose feed sends no hourly figures. */
+export const HOUR_MS = 60 * 60_000;
+/** The feed's own window figures are shown while they are at most this old. */
+export const STATS_FRESH_MS = 5 * 60_000;
 
 interface Entry {
   token: FeedToken;
-  /** Trades of the last five minutes, oldest first. */
+  /** Trades of the last hour, oldest first. */
   recent: { at: number; usd: number | null; price: number | null; buy: boolean }[];
+  /** The time of the newest trade dropped to stay under the per-token cap: the hour before it is incomplete. */
+  trimmedAt: number | null;
+  /** When the feed last sent `stats`. */
+  statsAt: number | null;
+  /** The highest market cap the bot saw, and when. */
+  peakMc: number | null;
+  peakAt: number | null;
   lastTradeAt: number | null;
   touchedAt: number;
 }
@@ -22,9 +33,24 @@ interface Entry {
 export interface FeedStateOptions {
   /** The most tokens kept; the ones untouched longest go first (default 50,000). */
   readonly maxTokens?: number;
-  /** The most trades kept per token inside the window (default 2,000). */
+  /** The most trades kept per token inside the hour (default 5,000). */
   readonly maxTradesPerToken?: number;
   readonly now?: () => number;
+}
+
+const finite = (value: number | null | undefined): value is number => typeof value === 'number' && Number.isFinite(value);
+const count = (value: number | null | undefined): number | null => (finite(value) && value >= 0 ? value : null);
+
+/** The feed's figures for one window, or null when it sent none. */
+function figuresOf(stats: FeedWindowStats | undefined): WindowFigures | null {
+  if (!stats) return null;
+  const figures: WindowFigures = {
+    buys: count(stats.buys),
+    sells: count(stats.sells),
+    volumeUsd: count(stats.volumeUsd),
+    priceChangePct: finite(stats.priceChangePct) ? stats.priceChangePct : null,
+  };
+  return Object.values(figures).some((v) => v !== null) ? figures : null;
 }
 
 export interface FeedStats {
@@ -82,11 +108,14 @@ export class FeedState implements DataSource {
   private readonly maxTrades: number;
   private readonly now: () => number;
   private readonly stats: FeedStats = { events: 0, trades: 0, tokens: 0, lastEventAt: null };
+  /** Before an hour has passed since this, the bot has not seen a whole hour itself. */
+  private readonly startedAt: number;
 
   constructor(options: FeedStateOptions = {}) {
     this.maxTokens = Math.max(1, options.maxTokens ?? 50_000);
-    this.maxTrades = Math.max(1, options.maxTradesPerToken ?? 2_000);
+    this.maxTrades = Math.max(1, options.maxTradesPerToken ?? 5_000);
     this.now = options.now ?? Date.now;
+    this.startedAt = this.now();
   }
 
   getStats(): Readonly<FeedStats> {
@@ -104,7 +133,7 @@ export class FeedState implements DataSource {
     let entry = this.entries.get(address);
     if (!entry) {
       if (!token) return null;
-      entry = { token, recent: [], lastTradeAt: null, touchedAt: at };
+      entry = { token, recent: [], trimmedAt: null, statsAt: null, peakMc: null, peakAt: null, lastTradeAt: null, touchedAt: at };
       if (this.entries.size >= this.maxTokens) this.evict();
     } else {
       // Re-inserted so the map's order is the order of last use.
@@ -113,7 +142,22 @@ export class FeedState implements DataSource {
     }
     entry.touchedAt = at;
     this.entries.set(address, entry);
+    if (token) this.noted(entry, token);
     return entry;
+  }
+
+  /** Notes the market cap for the peak, and when the feed's window figures arrived. */
+  private noted(entry: Entry, fields: Partial<FeedToken>, at: number = this.now()): void {
+    if (fields.stats && typeof fields.stats === 'object') entry.statsAt = this.now();
+    this.notePeak(entry, fields.mc, at);
+  }
+
+  private notePeak(entry: Entry, mc: number | null | undefined, at: number): void {
+    if (!finite(mc) || mc <= 0) return;
+    if (entry.peakMc === null || mc > entry.peakMc) {
+      entry.peakMc = mc;
+      entry.peakAt = at;
+    }
   }
 
   private evict(): void {
@@ -146,11 +190,14 @@ export class FeedState implements DataSource {
           ...(risk ? { risk: { ...entry.token.risk, ...risk } } : {}),
           address: entry.token.address,
         };
+        this.noted(entry, rest);
         return;
       }
       case 'token_tick': {
         const entry = this.touch(event.address);
-        if (entry) entry.token = { ...entry.token, price: event.price, ...(event.mc !== null ? { mc: event.mc } : {}) };
+        if (!entry) return;
+        entry.token = { ...entry.token, price: event.price, ...(event.mc !== null ? { mc: event.mc } : {}) };
+        this.notePeak(entry, event.mc, finite(event.at) && event.at > 0 ? event.at : this.now());
         return;
       }
       case 'market_trade': {
@@ -159,10 +206,14 @@ export class FeedState implements DataSource {
         const entry = this.touch(trade.address);
         if (entry) {
           entry.lastTradeAt = Math.max(entry.lastTradeAt ?? 0, trade.at);
-          // A trade in a side pool prices nothing, so it stays out of the window's volume and price change.
+          // A trade in a side pool prices nothing, so it stays out of the window's volume, price change and peak.
           if (trade.offMarket !== true) {
             entry.recent.push({ at: trade.at, usd: trade.usd, price: trade.price, buy: trade.side === 'buy' });
-            if (entry.recent.length > this.maxTrades) entry.recent.splice(0, entry.recent.length - this.maxTrades);
+            if (entry.recent.length > this.maxTrades) {
+              const dropped = entry.recent.splice(0, entry.recent.length - this.maxTrades);
+              entry.trimmedAt = Math.max(entry.trimmedAt ?? 0, dropped.at(-1)!.at);
+            }
+            this.notePeak(entry, trade.mc, trade.at);
           }
         }
         for (const listener of this.listeners) listener(trade);
@@ -175,29 +226,71 @@ export class FeedState implements DataSource {
     }
   }
 
-  private window(entry: Entry, at: number): Window5m {
-    const cutoff = at - WINDOW_MS;
-    let first = 0;
-    while (first < entry.recent.length && entry.recent[first]!.at < cutoff) first += 1;
-    if (first > 0) entry.recent.splice(0, first);
-    let volume: number | null = null;
+  /** The trades since `cutoff`, summed. A dollar volume is known only when every trade in it had a dollar value. */
+  private static sum(trades: Entry['recent'], from: number): { trades: number; buys: number; volumeUsd: number | null; priceChangePct: number | null } {
+    let volume: number | null = 0;
+    let n = 0;
     let buys = 0;
+    let priced = 0;
     let open: number | null = null;
     let close: number | null = null;
-    for (const t of entry.recent) {
-      if (t.usd !== null && Number.isFinite(t.usd)) volume = (volume ?? 0) + t.usd;
+    for (let i = from; i < trades.length; i += 1) {
+      const t = trades[i]!;
+      n += 1;
       if (t.buy) buys += 1;
+      volume = volume !== null && t.usd !== null && Number.isFinite(t.usd) ? volume + t.usd : null;
       if (t.price !== null && Number.isFinite(t.price) && t.price > 0) {
+        priced += 1;
         open ??= t.price;
         close = t.price;
       }
     }
-    const priced = entry.recent.filter((t) => t.price !== null && t.price > 0).length;
-    return { trades: entry.recent.length, buys, volumeUsd: volume, priceChangePct: priced >= 2 && open !== null && close !== null ? ((close - open) / open) * 100 : null };
+    return { trades: n, buys, volumeUsd: n > 0 ? volume : null, priceChangePct: priced >= 2 && open !== null && close !== null ? ((close - open) / open) * 100 : null };
+  }
+
+  private window(entry: Entry, at: number): Window5m {
+    // Trades older than an hour are let go; the five minutes are the tail of what is left.
+    const hourAgo = at - HOUR_MS;
+    let first = 0;
+    while (first < entry.recent.length && entry.recent[first]!.at < hourAgo) first += 1;
+    if (first > 0) entry.recent.splice(0, first);
+    const cutoff = at - WINDOW_MS;
+    let five = entry.recent.length;
+    while (five > 0 && entry.recent[five - 1]!.at >= cutoff) five -= 1;
+    return FeedState.sum(entry.recent, five);
+  }
+
+  /** The hour: the feed's own figures while fresh, else the bot's when it has watched the whole hour, else null. */
+  private hour(entry: Entry, at: number): WindowFigures | null {
+    const fresh = entry.statsAt !== null && at - entry.statsAt <= STATS_FRESH_MS;
+    const fromFeed = fresh ? figuresOf(entry.token.stats?.['1h']) : null;
+    if (fromFeed) return fromFeed;
+    const watchedWholeHour = at - this.startedAt >= HOUR_MS && (entry.trimmedAt === null || entry.trimmedAt < at - HOUR_MS);
+    if (!watchedWholeHour) return null;
+    const own = FeedState.sum(entry.recent, 0);
+    return { buys: own.buys, sells: own.trades - own.buys, volumeUsd: own.trades === 0 ? 0 : own.volumeUsd, priceChangePct: own.priceChangePct };
+  }
+
+  private day(entry: Entry, at: number): WindowFigures | null {
+    const fresh = entry.statsAt !== null && at - entry.statsAt <= STATS_FRESH_MS;
+    return fresh ? figuresOf(entry.token.stats?.['24h']) : null;
+  }
+
+  /**
+   * The highest market cap known. The feed's `ath` is a price; times the current market cap over the current price it
+   * is a market cap. The bot's own peak carries its time; the feed's does not.
+   */
+  private peak(entry: Entry): Peak | null {
+    const { ath, price, mc } = entry.token;
+    const fromFeed = finite(ath) && finite(price) && finite(mc) && ath > 0 && price > 0 && mc > 0 ? (ath * mc) / price : null;
+    const own = entry.peakMc;
+    const best = fromFeed !== null && (own === null || fromFeed > own * 1.0001) ? { mc: fromFeed, at: null } : own !== null ? { mc: own, at: entry.peakAt } : null;
+    // A peak below the current market cap would read as a fall that never happened.
+    return best && finite(mc) && best.mc < mc ? { mc, at: null } : best;
   }
 
   private view(entry: Entry, at: number): TokenView {
-    return { ...entry.token, m5: this.window(entry, at), lastTradeAt: entry.lastTradeAt };
+    return { ...entry.token, m5: this.window(entry, at), h1: this.hour(entry, at), h24: this.day(entry, at), peak: this.peak(entry), lastTradeAt: entry.lastTradeAt };
   }
 
   async token(address: string): Promise<TokenView | null> {
@@ -216,6 +309,14 @@ export class FeedState implements DataSource {
       out.push(view);
     }
     return out.sort((a, b) => (b.m5.volumeUsd ?? 0) - (a.m5.volumeUsd ?? 0)).slice(0, Math.max(0, limit));
+  }
+
+  /** The token's place among the 100 most traded of the last five minutes, or null outside them. */
+  async rank(address: string): Promise<number | null> {
+    const at = this.entries.get(address)?.lastTradeAt ?? null;
+    if (at === null || this.now() - at > WINDOW_MS) return null;
+    const place = (await this.trending(100)).findIndex((t) => t.address === address);
+    return place < 0 ? null : place + 1;
   }
 
   /** The newest tokens by the time they were created; tokens without a creation time are left out. */

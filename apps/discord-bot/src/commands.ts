@@ -8,9 +8,36 @@
  * declared on the command, because a server can change who sees a command.
  */
 
-import { DEFAULT_MIN_BUY_USD, MIN_BUY_USD_RANGE, ago, detectAddress, fmtUsd, shortAddr, type BuyBotConfig, type DataSource, type Line, type LinkTemplates, type Span, type Store } from '@soltoolkit/bot-core';
+import { CardLimiter, DEFAULT_MIN_BUY_USD, MIN_BUY_USD_RANGE, ago, detectAddress, fmtUsd, shortAddr, type BuyBotConfig, type DataSource, type Line, type LinkTemplates, type Span, type Store } from '@soltoolkit/bot-core';
 import { ApplicationCommandOptionType, ChannelType, PermissionFlagsBits, type RESTPostAPIChatInputApplicationCommandsJSONBody } from 'discord.js';
-import { note, tokenPayload, trendingPayload, type Payload } from './cards';
+import { COPY_PREFIX, REFRESH_PREFIX, note, tokenPayload, trendingPayload, type Payload } from './cards';
+
+/** A card is redrawn at most once in 15 seconds, and four times a minute. */
+export const newRefreshGate = (now: () => number = Date.now): CardLimiter => new CardLimiter(4, 15_000, now);
+
+export interface ButtonInput {
+  readonly customId: string;
+  /** The message the button is on. */
+  readonly messageId: string;
+}
+
+/** Either the card redrawn in place, or a short answer only the presser sees. */
+export type ButtonReply = { readonly kind: 'update'; readonly payload: Payload } | { readonly kind: 'reply'; readonly payload: Payload };
+
+/** Copy CA and Refresh under a token card; null for a button that is not the bot's. */
+export async function handleButton(input: ButtonInput, deps: CommandDeps & { readonly gate: CardLimiter }): Promise<ButtonReply | null> {
+  const copy = input.customId.startsWith(COPY_PREFIX);
+  if (!copy && !input.customId.startsWith(REFRESH_PREFIX)) return null;
+  const address = detectAddress(input.customId.slice(2));
+  if (!address) return null;
+  // The bare address, alone in the message, so a long press on a phone copies exactly it.
+  if (copy) return { kind: 'reply', payload: { content: address, allowedMentions: { parse: [] } } };
+  if (!deps.gate.allow(input.messageId, address)) return { kind: 'reply', payload: note([['Updated a moment ago. Try again in a few seconds.']]) };
+  const token = await deps.source.token(address);
+  if (!token) return { kind: 'reply', payload: note([['The feed no longer holds this token, so the card stays as it was.']]) };
+  const now = (deps.now ?? Date.now)();
+  return { kind: 'update', payload: tokenPayload(token, deps.links, now, { rank: (await deps.source.rank?.(address)) ?? null, poweredBy: deps.poweredBy ?? null }) };
+}
 
 const TRENDING_COUNT = 5;
 const COVERAGE_WINDOW_MS = 30 * 60_000;
@@ -105,7 +132,7 @@ export async function handleCommand(input: CommandInput, deps: CommandDeps): Pro
       if (!address) return quiet([['That is not a Solana token address.']]);
       const token = await source.token(address);
       if (!token) return quiet([['The feed has not seen ', { code: address }, ' yet. It lists tokens of the launchpads it follows from the moment the bot started.']]);
-      return aloud(tokenPayload(token, links, now));
+      return aloud(tokenPayload(token, links, now, { rank: (await source.rank?.(address)) ?? null, poweredBy: deps.poweredBy ?? null }));
     }
 
     case 'trending':

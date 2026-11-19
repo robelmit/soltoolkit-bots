@@ -6,6 +6,17 @@
 
 export type Stage = 'new' | 'bonding' | 'migrated';
 
+/** The feed's trading figures over one window (`stats["1h"]` and the like). Each is null or absent when unknown. */
+export interface FeedWindowStats {
+  readonly priceChangePct?: number | null;
+  readonly volumeUsd?: number | null;
+  readonly buys?: number | null;
+  readonly sells?: number | null;
+  readonly buyers?: number | null;
+  readonly sellers?: number | null;
+  readonly netBuyUsd?: number | null;
+}
+
 /** A token as the launch feed sends it (the fields the bots read). */
 export interface FeedToken {
   readonly address: string;
@@ -22,13 +33,25 @@ export interface FeedToken {
   readonly liqUsd?: number | null;
   readonly holders?: number | null;
   readonly createdAt?: number | null;
+  readonly migratedAt?: number | null;
   readonly creator?: string | null;
+  /** The highest price the feed has seen, in dollars (a price, not a market cap). */
+  readonly ath?: number | null;
+  /** The token's picture, as a URL. */
+  readonly image?: string | null;
+  readonly socials?: { readonly x?: string | null; readonly telegram?: string | null; readonly website?: string | null } | null;
+  readonly dexPaid?: boolean | null;
+  /** Trading figures by window: `1m`, `5m`, `1h`, `6h`, `24h`, as far as the feed computes them. */
+  readonly stats?: Readonly<Record<string, FeedWindowStats>> | null;
   readonly audit?: { readonly mintRevoked?: boolean | null; readonly freezeRevoked?: boolean | null } | null;
   readonly risk?: {
     readonly top10Pct?: number | null;
     readonly devPct?: number | null;
+    /** The creator sold out of the token. */
+    readonly devSold?: boolean | null;
     readonly snipersPct?: number | null;
     readonly bundlersPct?: number | null;
+    readonly insidersPct?: number | null;
     readonly rugged?: boolean | null;
   } | null;
 }
@@ -69,9 +92,33 @@ export interface Window5m {
   readonly priceChangePct: number | null;
 }
 
+/**
+ * Trading figures over a longer window (an hour, a day). Each is null when unknown: the feed did not send it lately,
+ * or the bot has not been running long enough to have seen the whole window itself.
+ */
+export interface WindowFigures {
+  readonly buys: number | null;
+  readonly sells: number | null;
+  readonly volumeUsd: number | null;
+  readonly priceChangePct: number | null;
+}
+
+/** The highest market cap known, and when it was reached when the bot saw it happen. */
+export interface Peak {
+  readonly mc: number;
+  /** Null when the figure came from the feed, which does not say when. */
+  readonly at: number | null;
+}
+
 /** A token with what the bot has seen of it lately. */
 export interface TokenView extends FeedToken {
   readonly m5: Window5m;
+  /** The last hour; null when nothing is known about it. */
+  readonly h1?: WindowFigures | null;
+  /** The last 24 hours, from the feed only; null when it did not send them lately. */
+  readonly h24?: WindowFigures | null;
+  /** The highest market cap known, at or above the current one; null when unknown. */
+  readonly peak?: Peak | null;
   readonly lastTradeAt: number | null;
 }
 
@@ -82,6 +129,8 @@ export interface DataSource {
   trending(limit: number): Promise<TokenView[]>;
   /** When a trade of the token was last seen, or null. */
   lastTradeAt(address: string): number | null;
+  /** The token's place in the trending list (1 is first), or null outside it. Optional for other sources. */
+  rank?(address: string): Promise<number | null>;
 }
 
 /** A group's buy bot: one token, a least size, and where the posts go. */

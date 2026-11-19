@@ -23,9 +23,21 @@ export interface OutboxSendOptions {
   /** What the message is, for the counters: `buy`, `card`, … */
   readonly kind: string;
   readonly buttons?: readonly LinkButton[];
+  /** The card's own buttons, on a row of their own. */
+  readonly actions?: CardActions;
+  /** A picture shown small above the text, as the message's link preview. */
+  readonly previewUrl?: string | null;
   /** How long the caller will wait for a slot (default 5 s). */
   readonly maxWaitMs?: number;
 }
+
+/** Copy CA (Telegram copies the address itself) and Refresh (a callback, `r:<address>`). */
+export interface CardActions {
+  readonly copy?: string;
+  readonly refresh?: string;
+}
+
+export const REFRESH_PREFIX = 'r:';
 
 export interface OutboxMedia {
   readonly kind: 'photo' | 'animation';
@@ -57,11 +69,28 @@ export const isParseError = (error: unknown): boolean => error instanceof Grammy
 
 export const MD = { parse_mode: 'MarkdownV2' as const, link_preview_options: { is_disabled: true } };
 
-/** Link buttons as one row of an inline keyboard; undefined when there are none. */
-export function keyboardOf(buttons: readonly LinkButton[] | undefined): InlineKeyboard | undefined {
-  if (!buttons?.length) return undefined;
+/** The link preview of a message: a picture shown small above the text, or none. Only https pictures are shown. */
+export function previewOf(url: string | null | undefined): { link_preview_options: { is_disabled: true } | { url: string; prefer_small_media: true; show_above_text: true } } {
+  if (url) {
+    try {
+      if (new URL(url).protocol === 'https:') return { link_preview_options: { url, prefer_small_media: true, show_above_text: true } };
+    } catch {
+      // Not a URL: no preview.
+    }
+  }
+  return { link_preview_options: { is_disabled: true } };
+}
+
+/** Link buttons as one row of an inline keyboard, the card's own buttons on a second; undefined when there are none. */
+export function keyboardOf(buttons: readonly LinkButton[] | undefined, actions: CardActions = {}): InlineKeyboard | undefined {
+  if (!buttons?.length && !actions.copy && !actions.refresh) return undefined;
   const keyboard = new InlineKeyboard();
-  for (const button of buttons) keyboard.url(button.label, button.url);
+  for (const button of buttons ?? []) keyboard.url(button.label, button.url);
+  if (actions.copy || actions.refresh) {
+    if (buttons?.length) keyboard.row();
+    if (actions.copy) keyboard.copyText('📋 Copy CA', actions.copy);
+    if (actions.refresh) keyboard.text('♻️ Refresh', `${REFRESH_PREFIX}${actions.refresh}`);
+  }
   return keyboard;
 }
 
@@ -94,10 +123,11 @@ export class Outbox {
   }
 
   async text(chatId: string, lines: readonly Line[], options: OutboxSendOptions): Promise<OutboxResult> {
-    const keyboard = keyboardOf(options.buttons);
+    const keyboard = keyboardOf(options.buttons, options.actions);
     const markup = keyboard ? { reply_markup: keyboard } : {};
+    const preview = previewOf(options.previewUrl);
     return this.deliver(chatId, options, async (asPlain) => {
-      const sent = asPlain ? await this.api.sendMessage(chatId, toPlain(lines), { link_preview_options: { is_disabled: true }, ...markup }) : await this.api.sendMessage(chatId, toMarkdownV2(lines), { ...MD, ...markup });
+      const sent = asPlain ? await this.api.sendMessage(chatId, toPlain(lines), { ...preview, ...markup }) : await this.api.sendMessage(chatId, toMarkdownV2(lines), { ...MD, ...preview, ...markup });
       return sent.message_id;
     });
   }

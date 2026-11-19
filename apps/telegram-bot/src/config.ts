@@ -4,7 +4,7 @@
  * one; nothing is guessed.
  */
 
-import { DEFAULT_STREAM_KEY, linkTemplates, parseButtons, type LinkTemplates } from '@soltoolkit/bot-core';
+import { DEFAULT_STREAM_KEY, linksFromSettings, type LinkTemplates } from '@soltoolkit/bot-core';
 
 export interface Config {
   readonly token: string;
@@ -15,6 +15,8 @@ export interface Config {
   readonly links: LinkTemplates;
   /** A credit line for whoever runs the bot, shown at the end of the welcome and /help. */
   readonly poweredBy: string | null;
+  /** Show the token's picture as a small preview above a card (`BOT_CARD_IMAGE=1`). */
+  readonly cardImage: boolean;
 }
 
 export function readConfig(env: Readonly<Record<string, string | undefined>>): Config {
@@ -40,16 +42,13 @@ export function readConfig(env: Readonly<Record<string, string | undefined>>): C
     throw new Error(`FEED is "${kind}": use stdin or redis`);
   }
 
-  const buttons = get('BOT_BUTTONS');
-  const links = linkTemplates({
-    token: get('LINK_TOKEN'),
-    wallet: get('LINK_WALLET'),
-    tx: get('LINK_TX'),
-    ...(buttons !== undefined ? { buttons: parseButtons(buttons) } : {}),
-  });
+  const links = linksFromSettings(get);
 
   const poweredBy = get('BOT_POWERED_BY') ?? null;
   if (poweredBy !== null && poweredBy.length > 120) throw new Error('BOT_POWERED_BY is at most 120 characters');
 
-  return { token, feed, storePath: get('STORE_PATH') ?? './data/telegram.json', links, poweredBy };
+  const image = get('BOT_CARD_IMAGE');
+  if (image !== undefined && image !== '0' && image !== '1') throw new Error('BOT_CARD_IMAGE is 1 or 0');
+
+  return { token, feed, storePath: get('STORE_PATH') ?? './data/telegram.json', links, poweredBy, cardImage: image === '1' };
 }

@@ -2,7 +2,7 @@
 
 A self-hosted Discord bot for token communities on Solana launchpads. It reads the [launch feed](https://github.com/robelmit/soltoolkit-feed) and posts the same cards as the [Telegram bot](../telegram-bot), as embeds:
 
-- **Token card.** `/ca <address>`.
+- **Token card.** `/ca <address>`. The figures sit in grey boxes, the side bar is green when the price rose and red when it fell, and the token's picture shows beside it. **Copy CA** answers with the bare address, only to you; **Refresh** redraws the card in place.
 - **Trending.** `/trending` lists the most traded launchpad tokens of the last five minutes.
 - **Buy bot.** A server manager runs `/track <address>`; every buy of that token at or above a size is posted in a channel. Busy spells are merged into one post.
 
@@ -51,7 +51,9 @@ The manager commands are declared with the Manage Server permission, and the per
 | `FEED_STREAM_KEY` | `stream:market:solana` | The feed's stream |
 | `STORE_PATH` | `./data/discord.json` | The file the servers' settings are kept in |
 | `BOT_BUTTONS` | `Explorer` → Solscan | Link buttons under cards and buy posts: `Label|https://…{address}`, comma separated, at most five |
-| `BOT_POWERED_BY` | — | A credit line for whoever runs the bot, at the end of `/help` (at most 120 characters), such as `Powered by Example · example.com` |
+| `LINK_ROW` | `EXP` → Solscan, `DS` → DexScreener, `X` → an X search | The short links inside a card: `CODE|https://…{address}`, comma separated, at most ten, codes up to 12 characters; `off` for none |
+| `HOLDER_MAP_URL` | the soltoolkit Live site | The card's 🫧 holder map link, `https://…{address}`; `off` leaves it out |
+| `BOT_POWERED_BY` | — | A credit line for whoever runs the bot, at the end of `/help` and in a card's footer (at most 120 characters), such as `Powered by Example · example.com` |
 | `LINK_TOKEN`, `LINK_WALLET`, `LINK_TX` | Solscan | Link templates with `{address}` or `{tx}` |
 
 A missing or malformed setting stops the bot at start and says which one.
@@ -76,7 +78,7 @@ A missing or malformed setting stops the bot at start and says which one.
 pnpm --filter @soltoolkit/discord-bot test
 ```
 
-10 tests cover the commands and the embeds as plain functions. The connection to Discord (`src/main.ts`) is type-checked and was not run against the real Discord API in this repository's tests; that needs your own bot token.
+13 tests cover the commands, the buttons and the embeds as plain functions. The connection to Discord (`src/main.ts`) is type-checked and was not run against the real Discord API in this repository's tests; that needs your own bot token.
 
 ## Licence
 

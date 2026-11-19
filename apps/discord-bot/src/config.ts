@@ -4,7 +4,7 @@
  * one; nothing is guessed.
  */
 
-import { DEFAULT_STREAM_KEY, linkTemplates, parseButtons, type LinkTemplates } from '@soltoolkit/bot-core';
+import { DEFAULT_STREAM_KEY, linksFromSettings, type LinkTemplates } from '@soltoolkit/bot-core';
 
 export interface Config {
   readonly token: string;
@@ -51,13 +51,7 @@ export function readConfig(env: Readonly<Record<string, string | undefined>>): C
   const content = get('DISCORD_MESSAGE_CONTENT');
   if (content !== undefined && content !== '0' && content !== '1') throw new Error('DISCORD_MESSAGE_CONTENT is 1 or 0');
 
-  const buttons = get('BOT_BUTTONS');
-  const links = linkTemplates({
-    token: get('LINK_TOKEN'),
-    wallet: get('LINK_WALLET'),
-    tx: get('LINK_TX'),
-    ...(buttons !== undefined ? { buttons: parseButtons(buttons) } : {}),
-  });
+  const links = linksFromSettings(get);
 
   const poweredBy = get('BOT_POWERED_BY') ?? null;
   if (poweredBy !== null && poweredBy.length > 120) throw new Error('BOT_POWERED_BY is at most 120 characters');

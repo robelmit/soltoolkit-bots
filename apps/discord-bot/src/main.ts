@@ -10,7 +10,7 @@
 import { BuyBotEngine, CardLimiter, FeedState, JsonFileStore, detectAddress, readJsonl, readRedisStream, withTokenFacts, type Logger, type PostOutcome } from '@soltoolkit/bot-core';
 import { Client, DiscordAPIError, Events, GatewayIntentBits, MessageFlags, PermissionFlagsBits, REST, Routes } from 'discord.js';
 import { buyPayload, tokenPayload, type Payload } from './cards';
-import { COMMANDS, handleCommand } from './commands';
+import { COMMANDS, handleButton, handleCommand, newRefreshGate } from './commands';
 import { readConfig } from './config';
 
 const stamp = (level: string, message: string, fields?: Record<string, unknown>): string => JSON.stringify({ at: new Date().toISOString(), level, message, ...fields });
@@ -63,7 +63,19 @@ async function main(): Promise<void> {
   client.on(Events.GuildCreate, (guild) => void store.upsert(guild.id, { title: guild.name, left: false }).then(() => log.info('added to server', { guildId: guild.id })));
   client.on(Events.GuildDelete, (guild) => void store.upsert(guild.id, { left: true }).then(() => engine.invalidate()));
 
+  const gate = newRefreshGate();
   client.on(Events.InteractionCreate, async (interaction) => {
+    if (interaction.isButton()) {
+      try {
+        const reply = await handleButton({ customId: interaction.customId, messageId: interaction.message.id }, { source: feed, store, links: config.links, changed: () => undefined, poweredBy: config.poweredBy, gate });
+        if (!reply) return;
+        if (reply.kind === 'update') await interaction.update(reply.payload);
+        else await interaction.reply({ ...reply.payload, flags: MessageFlags.Ephemeral });
+      } catch (error) {
+        log.warn('a button failed', { button: interaction.customId.slice(0, 2), error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
     if (!interaction.isChatInputCommand()) return;
     try {
       const reply = await handleCommand(
@@ -94,7 +106,7 @@ async function main(): Promise<void> {
       const address = detectAddress(message.content);
       if (!address || !limiter.allow(message.guildId, address)) return;
       const token = await feed.token(address);
-      if (token) await send(message.channelId, tokenPayload(token, config.links, Date.now()));
+      if (token) await send(message.channelId, tokenPayload(token, config.links, Date.now(), { rank: await feed.rank(address), poweredBy: config.poweredBy }));
     });
   }
 

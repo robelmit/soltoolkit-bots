@@ -21,13 +21,18 @@ import {
   fmtTokenAmount,
   fmtUsd,
   fromBaseUnits,
+  appLabel,
+  fmtShort,
   linkTemplates,
   parseButtons,
+  parseLinkRow,
   parseUsd,
   shortAddr,
+  telegramEntities,
   toDiscord,
   toMarkdownV2,
   toPlain,
+  toText,
   tokenCard,
   trendingCard,
   txUrl,
@@ -178,31 +183,103 @@ describe('cards', () => {
     lastTradeAt: 60_000,
   };
 
-  it('prints a token card with unknown figures as dashes', () => {
-    const text = toPlain(tokenCard(token, linkTemplates(), 61_000));
-    expect(text.split('\n')).toEqual([
-      'ZOP — Zop [new]',
+  it('prints a token card in the traders\' order, with unknown figures as dashes', () => {
+    const lines = tokenCard(token, linkTemplates(), 61_000);
+    expect(toText(lines).split('\n')).toEqual([
+      '🧪 Zop [new] [4.4K / +12% 5m] $ZOP/SOL',
+      '☀️ Solana @ pump.fun · curve 71%',
+      '💰 Price: $0.0₅4446',
+      '💎 MC: $4.4K',
+      '💧 Liq: —',
+      '📈 5M: +12.3% · $820 · 🅑 2 Ⓢ 1',
+      '📊 Age: 1m',
+      '🛡 mint ✅ · freeze — · top 10 31% · dev 3% · bundlers 13%',
+      '👥 Holders: 12 · 🫧 Map',
+      '🔗 EXP · DS · X',
+      '',
       MINT,
-      'Solana · pumpfun · bonding 71% · 1m old',
-      'Price $0.0₅4446 · MC $4,446.05 · Liq —',
-      '5m +12.3% · Vol 5m $820.00 · Holders 12',
-      'Checks: mint ✅ · freeze — · top 10 31% · dev 3% · bundlers 13%',
-      `Open in explorer (https://solscan.io/token/${MINT})`,
+      '♻️ Updated 1970-01-01 00:01 UTC',
     ]);
-    expect(toMarkdownV2(tokenCard(token, linkTemplates(), 61_000))).toContain('*ZOP* — Zop \\[new\\]');
+    expect(toPlain(lines)).toContain(`🫧 Map (https://soltoolkit-live.vercel.app/#/token/${MINT})`);
+    expect(toPlain(lines)).toContain(`DS (https://dexscreener.com/solana/${MINT})`);
+    const md = toMarkdownV2(lines);
+    expect(md).toContain(`🧪 [Zop \\[new\\]](https://solscan.io/token/${MINT}) *\\[4\\.4K / \\+12% 5m\\]* $ZOP/SOL`);
+    expect(md).toContain('💰 Price: $0\\.0₅4446');
+    const discord = toDiscord(lines);
+    expect(discord).toContain('💎 MC: `$4.4K`');
+    expect(discord).toContain('♻️ Updated <t:61:R>');
+  });
+
+  it('shows the hour, the day, the peak, the rank, the socials and the first call when they are known', () => {
+    const rich: TokenView = {
+      ...token,
+      mc: 40_000,
+      quote: 'SOL',
+      liqUsd: 9_500,
+      h1: { buys: 25, sells: 30, volumeUsd: 1_539, priceChangePct: -11.7 },
+      h24: { buys: 134, sells: 113, volumeUsd: 6_580, priceChangePct: 48 },
+      peak: { mc: 120_000, at: 1_000 },
+      socials: { x: '@zopcoin', telegram: 'javascript:alert(1)', website: 'https://zop.example' },
+      dexPaid: true,
+      risk: { ...token.risk, devSold: true },
+    };
+    const text = toText(tokenCard(rich, linkTemplates(), 3_601_000, { rank: 4, caller: { name: 'ana', mc: 10_000, at: 1_000 } })).split('\n');
+    expect(text[0]).toBe('🧪 Zop [new] [40K / -12% 1h] $ZOP/SOL');
+    expect(text[1]).toBe('☀️ Solana @ pump.fun · curve 71% · 🔥 #4');
+    expect(text[3]).toBe('💎 MC: $40K ⇨ $120K peak [1h]');
+    expect(text[5]).toBe('📈 1H: -11.7% · $1.5K · 🅑 25 Ⓢ 30 · 5M +12.3%');
+    expect(text[6]).toBe('📊 24H: +48% · Vol $6.6K · Age: 1h');
+    expect(text[7]).toContain('dev sold');
+    // A link that is not http(s) never reaches a card; a bare X handle becomes its page.
+    expect(text[9]).toBe('🌐 X · Web · Dex paid ✅');
+    expect(toPlain(tokenCard(rich, linkTemplates(), 3_601_000))).toContain('X (https://x.com/zopcoin)');
+    expect(text).toContain('🏆 ana @ 10K · 4.0x · 1h');
+  });
+
+  it('says "no trades" for a quiet hour, and leaves the headline figures out when none is known', () => {
+    const quiet = toText(tokenCard({ ...token, mc: null, m5: { trades: 0, buys: 0, volumeUsd: null, priceChangePct: null }, h1: { buys: 0, sells: 0, volumeUsd: 0, priceChangePct: null } }, linkTemplates(), 61_000)).split('\n');
+    expect(quiet[0]).toBe('🧪 Zop [new] $ZOP/SOL');
+    expect(quiet[5]).toBe('📈 1H: no trades');
+  });
+
+  it('leaves a peak out when it is the current market cap, and a row out when nothing in it is known', () => {
+    const text = toText(tokenCard({ ...token, peak: { mc: 4_500, at: null }, audit: null, risk: null }, linkTemplates({ row: [], holderMap: null }), 61_000));
+    expect(text).toContain('💎 MC: $4.4K\n');
+    expect(text).not.toContain('🛡');
+    expect(text).not.toContain('🔗');
+    expect(text).not.toContain('🫧');
+  });
+
+  it('stays under Telegram\'s 100 formatting entities with every link filled', () => {
+    const row = parseLinkRow(Array.from({ length: 10 }, (_, i) => `L${i}|https://example.com/${i}/{address}`).join(','));
+    const full = { ...token, socials: { x: 'https://x.com/a', telegram: 'https://t.me/a', website: 'https://a.example' } };
+    const lines = tokenCard(full, linkTemplates({ row }), 61_000, { rank: 1, caller: { name: 'a', mc: 1, at: 1 } });
+    expect(telegramEntities(lines)).toBeLessThan(100);
+    expect(telegramEntities(trendingCard(Array.from({ length: 10 }, () => token), linkTemplates()))).toBeLessThan(100);
   });
 
   it('says nothing about checks the feed did not send', () => {
     expect(checksText({})).toBeNull();
     expect(checksText({ audit: { mintRevoked: false } })).toBe('mint ⚠️ · freeze —');
     expect(checksText({ risk: { rugged: true } })).toBe('mint — · freeze — · rugged ⚠️');
+    expect(checksText({ risk: { devPct: 4, devSold: false, insidersPct: 7.4 } })).toBe('mint — · freeze — · dev 4% · insiders 7%');
   });
 
   it('prints the trending list, and says so when nothing traded', () => {
     const text = toPlain(trendingCard([token], linkTemplates()));
     expect(text).toContain('top 1 by 5m volume');
-    expect(text).toContain(`1. ZOP (https://solscan.io/token/${MINT}) MC $4,446.05 · 5m +12.3% · vol $820.00 · bonding 71%`);
+    expect(text).toContain(`1. ZOP (https://solscan.io/token/${MINT}) · MC $4.4K · 5m +12.3% · Vol $820 · curve 71%`);
+    expect(toDiscord(trendingCard([token], linkTemplates()))).toContain('· MC `$4.4K` ·');
     expect(toPlain(trendingCard([], linkTemplates()))).toContain('Nothing with a dollar volume traded');
+  });
+
+  it('names launchpads and trading apps the way people write them', () => {
+    expect(appLabel('pumpfun-app')).toBe('pump.fun');
+    expect(appLabel('newapp')).toBe('newapp');
+    expect(appLabel(null)).toBeNull();
+    expect(fmtShort(950)).toBe('950');
+    expect(fmtShort(12_345_678)).toBe('12.3M');
+    expect(fmtShort(null)).toBe(DASH);
   });
 });
 

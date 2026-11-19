@@ -2,7 +2,7 @@
 
 A self-hosted Telegram bot for token communities on Solana launchpads. It reads the [launch feed](https://github.com/robelmit/soltoolkit-feed) and does three things in a group:
 
-- **Token card.** Paste a token address, or send `/ca <address>`.
+- **Token card.** Paste a token address, or send `/ca <address>`. Price, market cap and its peak, liquidity, the hour and the day, buys and sells, checks, holders, socials and a row of short links, with **Copy CA** and **Refresh** buttons under it. Refresh redraws the same message.
 - **Trending.** `/trending` lists the most traded launchpad tokens of the last five minutes.
 - **Buy bot.** An admin sends `/track <address>`; every buy of that token at or above a size is posted. Busy spells are merged into one post.
 
@@ -50,6 +50,9 @@ Admin commands are checked with Telegram's `getChatMember`. They are not trusted
 | `FEED_STREAM_KEY` | `stream:market:solana` | The feed's stream |
 | `STORE_PATH` | `./data/telegram.json` | The file the groups' settings are kept in |
 | `BOT_BUTTONS` | `Explorer` → Solscan | Buttons under cards and buy posts: `Label|https://…{address}`, comma separated, at most five |
+| `LINK_ROW` | `EXP` → Solscan, `DS` → DexScreener, `X` → an X search | The short links inside a card: `CODE|https://…{address}`, comma separated, at most ten, codes up to 12 characters; `off` for none |
+| `HOLDER_MAP_URL` | the soltoolkit Live site | The card's 🫧 holder map link, `https://…{address}`; `off` leaves it out |
+| `BOT_CARD_IMAGE` | `0` | `1` shows the token's picture small above a card, as Telegram's link preview |
 | `BOT_POWERED_BY` | — | A credit line for whoever runs the bot, at the end of the welcome and `/help` (at most 120 characters), such as `Powered by Example · example.com` |
 | `LINK_TOKEN`, `LINK_WALLET`, `LINK_TX` | Solscan | Link templates with `{address}` or `{tx}` |
 
@@ -60,6 +63,7 @@ A missing or malformed setting stops the bot at start and says which one.
 - **Rates.** Everything the bot posts on its own goes through one sender that stays under Telegram's rates: one message a second in a chat, 18 a minute in a group, 25 a second across the bot. A message that would wait too long is dropped and counted, not queued.
 - **Buy posts.** At most one every ten seconds per group. A buy older than a minute when the bot reads it is skipped.
 - **Unasked cards.** One card per address every two minutes per group, at most ten cards a minute per group.
+- **Refresh.** A card is redrawn at most once in 15 seconds and four times a minute; a press in between says so instead.
 - **Markup.** Messages are MarkdownV2 with every outside text escaped. If Telegram refuses the markup, the message is sent again as plain text.
 - **Groups that change.** When a group becomes a supergroup, its settings move to the new id. When the bot is removed, its buy bot stops.
 - **Dollar figures** come from the feed. Give the feed a SOL price, or buys have no dollar value and none is posted.
@@ -77,7 +81,7 @@ A missing or malformed setting stops the bot at start and says which one.
 pnpm --filter @soltoolkit/telegram-bot test
 ```
 
-15 tests run the bot against a fake Telegram that records every API call. The bot was not run against the real Telegram API in this repository's tests; that needs your own bot token.
+18 tests run the bot against a fake Telegram that records every API call. The bot was not run against the real Telegram API in this repository's tests; that needs your own bot token.
 
 ## Licence
 
