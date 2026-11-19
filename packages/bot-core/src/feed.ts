@@ -276,13 +276,10 @@ export class FeedState implements DataSource {
     return fresh ? figuresOf(entry.token.stats?.['24h']) : null;
   }
 
-  /**
-   * The highest market cap known. The feed's `ath` is a price; times the current market cap over the current price it
-   * is a market cap. The bot's own peak carries its time; the feed's does not.
-   */
+  /** The highest market cap known: the feed's `ath` or the bot's own peak. The bot's carries its time; the feed's does not. */
   private peak(entry: Entry): Peak | null {
-    const { ath, price, mc } = entry.token;
-    const fromFeed = finite(ath) && finite(price) && finite(mc) && ath > 0 && price > 0 && mc > 0 ? (ath * mc) / price : null;
+    const { ath, mc } = entry.token;
+    const fromFeed = finite(ath) && ath > 0 ? ath : null;
     const own = entry.peakMc;
     const best = fromFeed !== null && (own === null || fromFeed > own * 1.0001) ? { mc: fromFeed, at: null } : own !== null ? { mc: own, at: entry.peakAt } : null;
     // A peak below the current market cap would read as a fall that never happened.

@@ -120,11 +120,14 @@ describe('FeedState', () => {
     state.apply({ type: 'market_trade', ts: 1, trade: trade({ at: 1_500, mc: 5_000 }) });
     state.apply({ type: 'token_tick', ts: 1, address: 'Mint1', price: 0.002, mc: 2_000, at: 1_800 });
     expect((await state.token('Mint1'))!.peak).toEqual({ mc: 5_000, at: 1_500 });
-    state.apply({ type: 'token_patch', ts: 1, address: 'Mint1', patch: { ath: 0.01 } });
+    // The feed's `ath` is a market cap in dollars.
+    state.apply({ type: 'token_patch', ts: 1, address: 'Mint1', patch: { ath: 10_000 } });
     expect((await state.token('Mint1'))!.peak).toEqual({ mc: 10_000, at: null });
+    state.apply({ type: 'token_patch', ts: 1, address: 'Mint1', patch: { ath: 3_000 } });
+    expect((await state.token('Mint1'))!.peak).toEqual({ mc: 5_000, at: 1_500 });
     // A side-pool trade prices nothing, so it is no peak either.
     state.apply({ type: 'market_trade', ts: 1, trade: trade({ at: 1_900, mc: 99_000, offMarket: true }) });
-    expect((await state.token('Mint1'))!.peak!.mc).toBe(10_000);
+    expect((await state.token('Mint1'))!.peak!.mc).toBe(5_000);
   });
 
   it('ranks a token among the most traded of the last five minutes', async () => {

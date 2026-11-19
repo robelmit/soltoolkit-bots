@@ -35,7 +35,7 @@ export interface FeedToken {
   readonly createdAt?: number | null;
   readonly migratedAt?: number | null;
   readonly creator?: string | null;
-  /** The highest price the feed has seen, in dollars (a price, not a market cap). */
+  /** The highest market cap the feed has seen, in dollars (its all-time high). */
   readonly ath?: number | null;
   /** The token's picture, as a URL. */
   readonly image?: string | null;

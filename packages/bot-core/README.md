@@ -75,7 +75,7 @@ Node 20 or later. No dependencies.
 | Row | From |
 |---|---|
 | Price, market cap, liquidity, holders, curve, checks | The feed's token and its patches |
-| Peak market cap | The feed's `ath` (a price) times the current market cap over the current price; or the highest market cap the bot saw itself, with its time |
+| Peak market cap | The feed's `ath`, its highest market cap; or the highest market cap the bot saw itself, with its time, whichever is higher |
 | The hour and the day | The feed's `stats["1h"]` and `stats["24h"]` while they are at most five minutes old. Without them, the hour from the bot's own trades, but only once the bot has watched a whole hour; otherwise the row falls back to the five minutes |
 | Five minutes | The bot's own trades |
 | Rank | The token's place among the 100 most traded of the last five minutes |
