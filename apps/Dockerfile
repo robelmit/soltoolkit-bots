@@ -17,6 +17,8 @@ RUN pnpm install --frozen-lockfile --filter "@soltoolkit/${APP}..." \
 WORKDIR /repo/apps/${APP}
 # The bots keep their settings file in a volume, so it survives a new image.
 ENV STORE_PATH=/data/store.json
+# The tokens a bot knows, kept across restarts (the bots read SNAPSHOT_PATH; the API ignores it).
+ENV SNAPSHOT_PATH=/data/feed-snapshot.json
 RUN mkdir -p /data && chown node:node /data
 VOLUME /data
 USER node
