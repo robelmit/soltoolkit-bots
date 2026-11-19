@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@soltoolkit/bot-core": "workspace:^",
+    "@soltoolkit/mcp": "^0.1.0",
     "discord.js": "^14.27.0",
     "ioredis": "^6.0.0",
     "tsx": "^4.19.2"

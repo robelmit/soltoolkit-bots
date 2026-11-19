@@ -23,3 +23,6 @@ Thumbs.db
 *.sqlite
 *.sqlite-journal
 data/
+
+# Committed once the soltoolkit packages this repository uses are on npm (see .pnpmfile.cjs).
+pnpm-lock.yaml

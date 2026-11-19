@@ -3,7 +3,7 @@
  * call the bot makes and answers it, so no test touches the network.
  */
 
-import { FeedState, MemoryStore, linkTemplates, parseButtons, type FeedEvent, type FeedTrade } from '@soltoolkit/bot-core';
+import { FeedState, MemoryStore, linkTemplates, parseButtons, type ChainTools, type FeedEvent, type FeedTrade } from '@soltoolkit/bot-core';
 import { GrammyError } from 'grammy';
 import type { Update, UserFromGetMe } from 'grammy/types';
 import { describe, expect, it } from 'vitest';
@@ -24,13 +24,13 @@ interface Call {
   payload: Record<string, unknown>;
 }
 
-function harness(options: { refuse?: (call: Call) => GrammyError | null; poweredBy?: string; cardImage?: boolean } = {}) {
+function harness(options: { refuse?: (call: Call) => GrammyError | null; poweredBy?: string; cardImage?: boolean; tools?: ChainTools | null } = {}) {
   let now = 1_000_000;
   let updateId = 0;
   const feed = new FeedState({ now: () => now });
   const store = new MemoryStore(() => now);
   const links = linkTemplates({ buttons: parseButtons('Chart|https://example.com/c/{address}') });
-  const { bot, engine, alerts, outbox } = createBot({ token: TOKEN, source: feed, store, links, botInfo, now: () => now, sleep: async (ms) => void (now += ms), poweredBy: options.poweredBy ?? null, cardImage: options.cardImage ?? false });
+  const { bot, engine, alerts, outbox } = createBot({ token: TOKEN, source: feed, store, links, botInfo, now: () => now, sleep: async (ms) => void (now += ms), poweredBy: options.poweredBy ?? null, cardImage: options.cardImage ?? false, tools: options.tools ?? null });
   feed.onTrade(engine.onTrade);
   feed.onToken(alerts.onToken);
   feed.onTrade(alerts.onTrade);
@@ -292,6 +292,56 @@ describe('the outbox', () => {
     expect((await outbox.text('-1', [['b']], { kind: 'buy' })).outcome).toBe('sent');
     expect((await outbox.text('-1', [['c']], { kind: 'buy' })).outcome).toBe('dropped');
     expect(outbox.getStats().buy).toEqual({ sent: 2, dropped: 1, gone: 0, failed: 0, limited: 1 });
+  });
+});
+
+describe("the chain's tools", () => {
+  const SIGNATURE = '4YSbm9KCpDV2orrQPeXg41hw9tzdSfNLe3ehJzqkPNxoTgepXwKWZhcjSbtkwFqzNKKCxNNnpL9XFKsDQt3u3gVc';
+  const fake = (): ChainTools & { asked: { name: string; args: Record<string, unknown> }[] } => {
+    const asked: { name: string; args: Record<string, unknown> }[] = [];
+    return {
+      asked,
+      tools: ['launchpad_quote', 'token_safety', 'holder_map', 'identify_trading_app'],
+      async run(name, args) {
+        asked.push({ name, args });
+        if (name === 'launchpad_quote') return { venue: 'pumpfun', side: 'buy', inAmount: args.amountIn, outAmount: '12000000000000', minOutAmount: '11640000000000', slippageBps: 300, venueFeeLamports: '5000000', priceImpactBps: 120 };
+        if (name === 'identify_trading_app') return { signature: args.signature, failed: false, platform: 'Axiom', by: 'fee-wallet', evidence: 'Fee1111111111111111111111111111111111' };
+        throw Object.assign(new Error('That address is not a token mint.'), { code: 'NOT_A_TOKEN' });
+      },
+    };
+  };
+
+  it('says so when the bot runs without a chain endpoint', async () => {
+    const h = harness();
+    await h.say(`/quote ${MINT} 0.5`);
+    expect(h.lastText()).toContain('without a chain endpoint');
+  });
+
+  it('quotes a buy in SOL, once in 30 seconds per chat, with the community\'s buttons', async () => {
+    const tools = fake();
+    const h = harness({ tools });
+    h.list(MINT);
+    await h.say(`/quote ${MINT} 0.5`, MEMBER);
+    expect(tools.asked[0]).toEqual({ name: 'launchpad_quote', args: { mint: MINT, side: 'buy', amountIn: '500000000' } });
+    expect(h.lastText()).toContain('💱 *Quote: 0\\.5 SOL → ZOP* · on pump\\.fun');
+    expect(h.lastText()).toContain('🪙 You get: 12M ZOP');
+    expect(JSON.stringify(h.sent().at(-1)!.payload.reply_markup)).toContain(`https://example.com/c/${MINT}`);
+    await h.say(`/quote ${MINT} 0.5`, MEMBER);
+    expect(h.lastText()).toContain('Asked a moment ago');
+    await h.say(`/quote ${MINT} lots`, MEMBER);
+    expect(h.lastText()).toContain('from 0\\.001 to 1,000');
+    await h.say('/quote', MEMBER);
+    expect(h.lastText()).toContain('Send /quote');
+  });
+
+  it('says a tool\'s own failure as the tool said it, and names the app behind a trade', async () => {
+    const h = harness({ tools: fake() });
+    await h.say(`/safety ${MINT}`, MEMBER);
+    expect(h.lastText()).toContain('⚠️ That address is not a token mint\\.');
+    await h.say(`/app https://solscan.io/tx/${SIGNATURE}`, MEMBER);
+    expect(h.lastText()).toContain('🔎 *Placed with Axiom*');
+    await h.say('/app nothing', MEMBER);
+    expect(h.lastText()).toContain('Send /app');
   });
 });
 

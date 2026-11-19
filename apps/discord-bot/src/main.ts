@@ -7,10 +7,10 @@
  * pacing here is the buy bot's own (one post per server every ten seconds).
  */
 
-import { AlertEngine, BuyBotEngine, CardLimiter, FeedState, JsonFileStore, detectAddress, firstCall, isDevAlert, keepFeedSnapshot, loadFeedSnapshot, readJsonl, readRedisStream, withTokenFacts, type Logger, type PostOutcome } from '@soltoolkit/bot-core';
+import { AlertEngine, BuyBotEngine, CardLimiter, FeedState, JsonFileStore, detectAddress, firstCall, isDevAlert, keepFeedSnapshot, loadFeedSnapshot, offeredCommands, readJsonl, readRedisStream, toolsFromModule, withTokenFacts, type ChainTools, type Logger, type PostOutcome } from '@soltoolkit/bot-core';
 import { Client, DiscordAPIError, Events, GatewayIntentBits, MessageFlags, PermissionFlagsBits, REST, Routes } from 'discord.js';
 import { alertPayload, buyPayload, tokenPayload, type Payload } from './cards';
-import { COMMANDS, handleButton, handleCommand, newRefreshGate } from './commands';
+import { COMMANDS, SLOW_COMMANDS, handleButton, handleCommand, newRefreshGate } from './commands';
 import { readConfig } from './config';
 
 const stamp = (level: string, message: string, fields?: Record<string, unknown>): string => JSON.stringify({ at: new Date().toISOString(), level, message, ...fields });
@@ -28,6 +28,14 @@ async function main(): Promise<void> {
   const store = await JsonFileStore.open(config.storePath);
   const feed = new FeedState();
   if (config.snapshotPath) log.info('tokens taken back from the last run', { tokens: await loadFeedSnapshot(feed, config.snapshotPath).catch(() => 0) });
+  // The chain's tools come from the MCP package, loaded only when an endpoint is set.
+  let tools: ChainTools | null = null;
+  if (config.rpcUrl) {
+    const loaded = toolsFromModule(await import('@soltoolkit/mcp'), { rpcUrl: config.rpcUrl, feed });
+    tools = loaded.tools;
+    if (loaded.reason) log.warn(`/quote, /safety, /holders and /app are off: ${loaded.reason}`);
+    else log.info('chain tools on', { tools: tools?.tools.length ?? 0 });
+  }
   const client = new Client({ intents: [GatewayIntentBits.Guilds, ...(config.messageContent ? [GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] : [])] });
 
   const send = async (channelId: string, payload: Payload): Promise<PostOutcome> => {
@@ -106,7 +114,10 @@ async function main(): Promise<void> {
       return;
     }
     if (!interaction.isChatInputCommand()) return;
+    // A chain read can take longer than the three seconds Discord waits for an answer: it is told to wait first.
+    const slow = SLOW_COMMANDS.has(interaction.commandName);
     try {
+      if (slow) await interaction.deferReply();
       const reply = await handleCommand(
         {
           name: interaction.commandName,
@@ -122,13 +133,19 @@ async function main(): Promise<void> {
           mode: interaction.options.getString('mode'),
           minMc: interaction.options.getNumber('min_mc'),
           launchpad: interaction.options.getString('launchpad'),
+          amount: interaction.options.getNumber('amount'),
+          signature: interaction.options.getString('signature'),
         },
-        { source: feed, store, links: config.links, changed, poweredBy: config.poweredBy },
+        { source: feed, store, links: config.links, changed, poweredBy: config.poweredBy, tools },
       );
-      await interaction.reply({ ...reply.payload, ...(reply.ephemeral ? { flags: MessageFlags.Ephemeral } : {}) });
+      // A deferred answer cannot turn private, so a refusal after the wait is said in the channel.
+      if (slow) await interaction.editReply(reply.payload);
+      else await interaction.reply({ ...reply.payload, ...(reply.ephemeral ? { flags: MessageFlags.Ephemeral } : {}) });
     } catch (error) {
       log.error('a command failed', { command: interaction.commandName, error: error instanceof Error ? error.message : String(error) });
-      if (!interaction.replied) await interaction.reply({ content: 'Something went wrong. Try again in a moment.', flags: MessageFlags.Ephemeral }).catch(() => undefined);
+      const sorry = { content: 'Something went wrong. Try again in a moment.' };
+      if (interaction.deferred) await interaction.editReply(sorry).catch(() => undefined);
+      else if (!interaction.replied) await interaction.reply({ ...sorry, flags: MessageFlags.Ephemeral }).catch(() => undefined);
     }
   });
 
@@ -171,8 +188,8 @@ async function main(): Promise<void> {
   }
 
   client.once(Events.ClientReady, (ready) => log.info('bot started', { user: ready.user.tag, servers: ready.guilds.cache.size }));
-  await new REST({ version: '10' }).setToken(config.token).put(Routes.applicationCommands(config.applicationId), { body: COMMANDS });
-  log.info('slash commands registered', { count: COMMANDS.length });
+  await new REST({ version: '10' }).setToken(config.token).put(Routes.applicationCommands(config.applicationId), { body: offeredCommands(COMMANDS, tools) });
+  log.info('slash commands registered', { count: offeredCommands(COMMANDS, tools).length });
   void engine.run(stop.signal);
   void alerts.run(stop.signal);
   await client.login(config.token);

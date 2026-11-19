@@ -20,8 +20,22 @@ import {
   DEFAULT_MIN_BUY_USD,
   alertCard,
   callsCard,
+  QUOTE_NEEDS_FEED,
+  appCard,
+  detectSignature,
   firstCall,
+  holdersCard,
   isDevAlert,
+  quoteAmountIn,
+  quoteCard,
+  quoteToolCall,
+  quoteViewOf,
+  safetyCard,
+  toolErrorText,
+  type AppView,
+  type ChainTools,
+  type HoldersView,
+  type SafetyView,
   fmtShort,
   launchpadLabel,
   parseLaunchArgs,
@@ -69,6 +83,8 @@ export interface BotOptions {
   readonly poweredBy?: string | null;
   /** Show the token's picture small above a card (`BOT_CARD_IMAGE=1`). */
   readonly cardImage?: boolean;
+  /** The chain's read-only tools (`/quote`, `/safety`, `/holders`, `/app`); without them those commands say so. */
+  readonly tools?: ChainTools | null;
 }
 
 export interface TelegramBot {
@@ -83,6 +99,10 @@ export const COMMANDS = [
   { command: 'ca', description: 'Token card: /ca <address>' },
   { command: 'trending', description: 'Most traded in the last 5 minutes' },
   { command: 'calls', description: 'The best calls in this group this week' },
+  { command: 'quote', description: 'What a buy gets: /quote <address> <amount>' },
+  { command: 'safety', description: 'A safety grade from the chain: /safety <address>' },
+  { command: 'holders', description: 'The largest holders and linked groups: /holders <address>' },
+  { command: 'app', description: 'Which app placed a trade: /app <transaction>' },
   { command: 'track', description: 'Admins: post every buy of a token here' },
   { command: 'minbuy', description: 'Admins: the least buy posted, in USD' },
   { command: 'buymedia', description: 'Admins: reply to a picture or GIF to post it with buys' },
@@ -103,6 +123,7 @@ const HELP: Line[] = [
   [{ bold: 'What this bot does' }],
   ['• Paste a token address, or send /ca <address>, for a token card. The first card of a token in a group credits whoever called it; /calls ranks the week\'s calls.'],
   ['• /trending lists the most traded launchpad tokens of the last 5 minutes.'],
+  ['• /quote <address> <amount> says what a buy gets; /safety, /holders and /app read the chain for a grade, the largest holders, or the app behind a trade.'],
   ['• Admins: /track <address> posts every buy of a token here, and warns when its creator sells. /minbuy <usd> sets the least buy posted, /buymedia adds a picture, /untrack stops it.'],
   ['• Admins: /launches on [market cap] [launchpad] posts new tokens the first time they reach a market cap (default $20K). /graduations on posts tokens that finish their curve. "off" stops either.'],
   ['The bot reads public chain data. It never trades and never asks for a wallet or a key.'],
@@ -394,6 +415,59 @@ export function createBot(options: BotOptions): TelegramBot {
       [`Least buy posted: ${fmtUsd(config.minUsd)} · Picture: ${config.media ? (config.media.kind === 'animation' ? 'GIF' : 'picture') : 'none'}`],
       coverageLine(config.address),
     ]);
+  });
+
+  // ---- the chain's tools ---------------------------------------------------
+
+  const tools = options.tools ?? null;
+  /** Reads the chain; a chat asks at most six a minute, and the same thing once in 30 seconds. */
+  const toolLimiter = new CardLimiter(6, 30_000, now);
+  const NO_TOOLS: Line[] = [['This bot runs without a chain endpoint, so it cannot read the chain for that. Token cards, trending, calls and alerts work without it.']];
+
+  const ask = async (ctx: Context, key: string, name: string, args: Record<string, unknown>, draw: (data: unknown) => Line[], buttons?: readonly LinkButton[]): Promise<void> => {
+    if (!tools) return void (await reply(ctx, NO_TOOLS));
+    if (!tools.tools.includes(name)) return void (await reply(ctx, [['That is not available for this chain.']]));
+    if (!toolLimiter.allow(chatKey(ctx), `${name}:${key}`)) return void (await reply(ctx, [['Asked a moment ago. Try again in half a minute.']]));
+    let data: unknown;
+    try {
+      data = await tools.run(name, args);
+    } catch (error) {
+      log.warn('a tool failed', { tool: name, error: error instanceof Error ? error.message : String(error) });
+      return void (await reply(ctx, [[`⚠️ ${toolErrorText(error)}`]]));
+    }
+    await reply(ctx, draw(data), buttons);
+  };
+
+  bot.command('quote', async (ctx) => {
+    const [first = '', amount = ''] = argOf(ctx).split(/\s+/);
+    const address = detectAddress(first);
+    if (!address || !amount) return void (await reply(ctx, [['Send /quote <token address> <amount>, such as /quote <address> 0.5: what a buy for that much gets.']]));
+    const token = await source.token(address);
+    if (QUOTE_NEEDS_FEED && !token) return void (await reply(ctx, [['The feed has not seen this token, so the coin it trades in is unknown.']]));
+    const amountIn = quoteAmountIn(amount, token);
+    if (!amountIn) return void (await reply(ctx, [['The amount is a number from 0.001 to 1,000.']]));
+    const call = quoteToolCall(address, amountIn.units);
+    await ask(ctx, `${address}:${amountIn.units}`, call.name, call.args, (data) => quoteCard(quoteViewOf(data, token), address, links), buttonsFor(links, address));
+  });
+
+  bot.command('safety', async (ctx) => {
+    const address = detectAddress(argOf(ctx));
+    if (!address) return void (await reply(ctx, [['Send /safety <token address>.']]));
+    const token = await source.token(address);
+    await ask(ctx, address, 'token_safety', { mint: address, ...(token?.creator ? { creator: token.creator } : {}) }, (data) => safetyCard(data as SafetyView, token?.symbol ?? null, address, links), buttonsFor(links, address));
+  });
+
+  bot.command('holders', async (ctx) => {
+    const address = detectAddress(argOf(ctx));
+    if (!address) return void (await reply(ctx, [['Send /holders <token address>.']]));
+    const token = await source.token(address);
+    await ask(ctx, address, 'holder_map', { mint: address, walk: 10 }, (data) => holdersCard(data as HoldersView, token?.symbol ?? null, address, links), buttonsFor(links, address));
+  });
+
+  bot.command('app', async (ctx) => {
+    const signature = detectSignature(argOf(ctx));
+    if (!signature) return void (await reply(ctx, [['Send /app <transaction signature>, or paste an explorer link to it.']]));
+    await ask(ctx, signature, 'identify_trading_app', { signature }, (data) => appCard(data as AppView, links));
   });
 
   // ---- calls and alerts ----------------------------------------------------

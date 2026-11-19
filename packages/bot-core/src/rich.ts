@@ -69,3 +69,24 @@ export const toPlain = (lines: readonly Line[]): string => lines.map((line) => l
 
 /** Lines as plain text with links reduced to their words: for a terminal, a preview or a copy to paste. */
 export const toText = (lines: readonly Line[]): string => lines.map((line) => line.map((span) => (typeof span !== 'string' && 'link' in span ? span.link : plainSpan(span))).join('')).join('\n');
+
+const ESC = '\u001b[';
+/** Text from outside never carries its own terminal codes into the output. */
+const noEscapes = (text: string): string => text.split(String.fromCharCode(0x1b)).join('').split(String.fromCharCode(0x9b)).join('');
+
+/** Lines for a terminal: bold names and figures, underlined link words, dim addresses. Use `toText` when not a terminal. */
+export const toAnsi = (lines: readonly Line[]): string =>
+  lines
+    .map((line) =>
+      line
+        .map((span) => {
+          if (typeof span === 'string') return noEscapes(span);
+          if ('bold' in span) return `${ESC}1m${noEscapes(span.bold)}${ESC}0m`;
+          if ('value' in span) return `${ESC}1m${noEscapes(span.value)}${ESC}0m`;
+          if ('code' in span) return `${ESC}2m${noEscapes(span.code)}${ESC}0m`;
+          if ('time' in span) return utcTime(span.time);
+          return `${ESC}4m${noEscapes(span.link)}${ESC}0m`;
+        })
+        .join(''),
+    )
+    .join('\n');

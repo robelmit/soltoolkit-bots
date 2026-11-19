@@ -14,10 +14,24 @@ import {
   DEFAULT_MIN_BUY_USD,
   LAUNCH_MIN_MC_RANGE,
   MIN_BUY_USD_RANGE,
+  QUOTE_NEEDS_FEED,
   ago,
+  appCard,
   callsCard,
   detectAddress,
+  detectSignature,
   firstCall,
+  holdersCard,
+  quoteAmountIn,
+  quoteCard,
+  quoteToolCall,
+  quoteViewOf,
+  safetyCard,
+  toolErrorText,
+  type AppView,
+  type ChainTools,
+  type HoldersView,
+  type SafetyView,
   fmtShort,
   fmtUsd,
   launchpadId,
@@ -32,7 +46,7 @@ import {
   type Store,
 } from '@soltoolkit/bot-core';
 import { ApplicationCommandOptionType, ChannelType, PermissionFlagsBits, type RESTPostAPIChatInputApplicationCommandsJSONBody } from 'discord.js';
-import { COPY_PREFIX, REFRESH_PREFIX, note, tokenPayload, trendingPayload, type Payload } from './cards';
+import { COPY_PREFIX, REFRESH_PREFIX, buttonRow, note, tokenPayload, trendingPayload, type Payload } from './cards';
 
 /** A card is redrawn at most once in 15 seconds, and four times a minute. */
 export const newRefreshGate = (now: () => number = Date.now): CardLimiter => new CardLimiter(4, 15_000, now);
@@ -87,6 +101,18 @@ export const COMMANDS: RESTPostAPIChatInputApplicationCommandsJSONBody[] = [
   { name: 'buybot', description: "The buy bot's settings", dm_permission: false },
   { name: 'calls', description: 'The best calls in this server this week', dm_permission: false },
   {
+    name: 'quote',
+    description: 'What a buy gets, read from the chain',
+    dm_permission: false,
+    options: [
+      { type: ApplicationCommandOptionType.String, name: 'address', description: 'The token address', required: true },
+      { type: ApplicationCommandOptionType.Number, name: 'amount', description: 'How much goes in, from 0.001 to 1,000', required: true, min_value: 0.001, max_value: 1_000 },
+    ],
+  },
+  { name: 'safety', description: 'A safety grade read from the chain', dm_permission: false, options: [{ type: ApplicationCommandOptionType.String, name: 'address', description: 'The token address', required: true }] },
+  { name: 'holders', description: 'The largest holders and linked groups', dm_permission: false, options: [{ type: ApplicationCommandOptionType.String, name: 'address', description: 'The token address', required: true }] },
+  { name: 'app', description: 'Which app placed a trade', dm_permission: false, options: [{ type: ApplicationCommandOptionType.String, name: 'signature', description: 'The transaction signature, or an explorer link to it', required: true }] },
+  {
     name: 'launches',
     description: 'Post new launches the first time they reach a market cap',
     dm_permission: false,
@@ -130,7 +156,13 @@ export interface CommandInput {
   readonly mode?: string | null;
   readonly minMc?: number | null;
   readonly launchpad?: string | null;
+  /** `/quote`: how much goes in. `/app`: the transaction. */
+  readonly amount?: number | null;
+  readonly signature?: string | null;
 }
+
+/** The commands that read the chain: Discord is told to wait before they run. */
+export const SLOW_COMMANDS: ReadonlySet<string> = new Set(['quote', 'safety', 'holders', 'app']);
 
 export interface CommandReply {
   readonly payload: Payload;
@@ -147,7 +179,13 @@ export interface CommandDeps {
   readonly now?: () => number;
   /** A credit line for whoever runs the bot, shown at the end of /help. */
   readonly poweredBy?: string | null;
+  /** The chain's read-only tools; without them /quote, /safety, /holders and /app say so. */
+  readonly tools?: ChainTools | null;
+  /** Limits the chain reads per server (default six a minute, the same one once in 30 seconds). */
+  readonly toolLimiter?: CardLimiter;
 }
+
+const defaultToolLimiter = new CardLimiter(6, 30_000);
 
 const HELP: Line[] = [
   [{ bold: 'What this bot does' }],
@@ -178,9 +216,49 @@ export async function handleCommand(input: CommandInput, deps: CommandDeps): Pro
   const managerOnly = (): CommandReply | null => (input.canManage ? null : quiet([['Only a member who can manage the server can do that.']]));
   const noToken = (): CommandReply => quiet([['No token is tracked here. Server managers: /track <address> posts every buy of a token in a channel.']]);
 
+  /** Reads the chain with one tool and draws its answer; a failure is said only to the asker. */
+  const ask = async (key: string, name: string, args: Record<string, unknown>, draw: (data: unknown) => Line[], address: string | null): Promise<CommandReply> => {
+    const tools = deps.tools ?? null;
+    if (!tools) return quiet([['This bot runs without a chain endpoint, so it cannot read the chain for that. Token cards, trending, calls and alerts work without it.']]);
+    if (!tools.tools.includes(name)) return quiet([['That is not available for this chain.']]);
+    if (!(deps.toolLimiter ?? defaultToolLimiter).allow(guildId, `${name}:${key}`)) return quiet([['Asked a moment ago. Try again in half a minute.']]);
+    try {
+      const lines = draw(await tools.run(name, args));
+      return aloud({ ...note(lines), components: address ? buttonRow(links, address) : [] });
+    } catch (error) {
+      return quiet([[`⚠️ ${toolErrorText(error)}`]]);
+    }
+  };
+
   switch (input.name) {
     case 'help':
       return quiet(deps.poweredBy ? [...HELP, [deps.poweredBy]] : HELP);
+
+    case 'quote': {
+      const address = detectAddress(input.address ?? '');
+      if (!address) return quiet([['That is not a Solana token address.']]);
+      const token = await source.token(address);
+      if (QUOTE_NEEDS_FEED && !token) return quiet([['The feed has not seen this token, so the coin it trades in is unknown.']]);
+      const amountIn = quoteAmountIn(String(input.amount ?? ''), token);
+      if (!amountIn) return quiet([['The amount is a number from 0.001 to 1,000.']]);
+      const call = quoteToolCall(address, amountIn.units);
+      return ask(`${address}:${amountIn.units}`, call.name, call.args, (data) => quoteCard(quoteViewOf(data, token), address, links), address);
+    }
+
+    case 'safety':
+    case 'holders': {
+      const address = detectAddress(input.address ?? '');
+      if (!address) return quiet([['That is not a Solana token address.']]);
+      const token = await source.token(address);
+      if (input.name === 'safety') return ask(address, 'token_safety', { mint: address, ...(token?.creator ? { creator: token.creator } : {}) }, (data) => safetyCard(data as SafetyView, token?.symbol ?? null, address, links), address);
+      return ask(address, 'holder_map', { mint: address, walk: 10 }, (data) => holdersCard(data as HoldersView, token?.symbol ?? null, address, links), address);
+    }
+
+    case 'app': {
+      const signature = detectSignature(input.signature ?? '');
+      if (!signature) return quiet([['That is not a transaction signature or a link to one.']]);
+      return ask(signature, 'identify_trading_app', { signature }, (data) => appCard(data as AppView, links), null);
+    }
 
     case 'ca': {
       const address = detectAddress(input.address ?? '');

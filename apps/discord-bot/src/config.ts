@@ -4,7 +4,7 @@
  * one; nothing is guessed.
  */
 
-import { DEFAULT_STREAM_KEY, linksFromSettings, type LinkTemplates } from '@soltoolkit/bot-core';
+import { DEFAULT_STREAM_KEY, linksFromSettings, readRpcUrl, type LinkTemplates } from '@soltoolkit/bot-core';
 
 export interface Config {
   readonly token: string;
@@ -23,6 +23,8 @@ export interface Config {
   readonly messageContent: boolean;
   /** A credit line for whoever runs the bot, shown at the end of /help (`BOT_POWERED_BY`). */
   readonly poweredBy: string | null;
+  /** The Solana RPC endpoint for /quote, /safety, /holders and /app (`SOLANA_RPC_URL`); null leaves them off. */
+  readonly rpcUrl: string | null;
 }
 
 export function readConfig(env: Readonly<Record<string, string | undefined>>): Config {
@@ -58,6 +60,7 @@ export function readConfig(env: Readonly<Record<string, string | undefined>>): C
   const poweredBy = get('BOT_POWERED_BY') ?? null;
   if (poweredBy !== null && poweredBy.length > 120) throw new Error('BOT_POWERED_BY is at most 120 characters');
 
+  const rpcUrl = readRpcUrl(get('SOLANA_RPC_URL'), 'SOLANA_RPC_URL');
   const snapshot = get('SNAPSHOT_PATH');
-  return { token, applicationId, feed, storePath: get('STORE_PATH') ?? './data/discord.json', snapshotPath: snapshot?.toLowerCase() === 'off' ? null : (snapshot ?? './data/feed-snapshot.json'), links, messageContent: content === '1', poweredBy };
+  return { token, applicationId, feed, rpcUrl, storePath: get('STORE_PATH') ?? './data/discord.json', snapshotPath: snapshot?.toLowerCase() === 'off' ? null : (snapshot ?? './data/feed-snapshot.json'), links, messageContent: content === '1', poweredBy };
 }

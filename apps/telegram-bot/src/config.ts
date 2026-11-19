@@ -4,7 +4,7 @@
  * one; nothing is guessed.
  */
 
-import { DEFAULT_STREAM_KEY, linksFromSettings, type LinkTemplates } from '@soltoolkit/bot-core';
+import { DEFAULT_STREAM_KEY, linksFromSettings, readRpcUrl, type LinkTemplates } from '@soltoolkit/bot-core';
 
 export interface Config {
   readonly token: string;
@@ -19,6 +19,8 @@ export interface Config {
   readonly poweredBy: string | null;
   /** Show the token's picture as a small preview above a card (`BOT_CARD_IMAGE=1`). */
   readonly cardImage: boolean;
+  /** The Solana RPC endpoint for /quote, /safety, /holders and /app (`SOLANA_RPC_URL`); null leaves them off. */
+  readonly rpcUrl: string | null;
 }
 
 export function readConfig(env: Readonly<Record<string, string | undefined>>): Config {
@@ -52,6 +54,7 @@ export function readConfig(env: Readonly<Record<string, string | undefined>>): C
   const image = get('BOT_CARD_IMAGE');
   if (image !== undefined && image !== '0' && image !== '1') throw new Error('BOT_CARD_IMAGE is 1 or 0');
 
+  const rpcUrl = readRpcUrl(get('SOLANA_RPC_URL'), 'SOLANA_RPC_URL');
   const snapshot = get('SNAPSHOT_PATH');
-  return { token, feed, storePath: get('STORE_PATH') ?? './data/telegram.json', snapshotPath: snapshot?.toLowerCase() === 'off' ? null : (snapshot ?? './data/feed-snapshot.json'), links, poweredBy, cardImage: image === '1' };
+  return { token, feed, rpcUrl, storePath: get('STORE_PATH') ?? './data/telegram.json', snapshotPath: snapshot?.toLowerCase() === 'off' ? null : (snapshot ?? './data/feed-snapshot.json'), links, poweredBy, cardImage: image === '1' };
 }

@@ -3,7 +3,7 @@
 import { FeedState, MemoryStore, buyOf, linkTemplates, parseButtons, type FeedTrade } from '@soltoolkit/bot-core';
 import { describe, expect, it } from 'vitest';
 import { COLORS, alertPayload, buyPayload, tokenPayload } from '../src/cards';
-import { COMMANDS, handleButton, handleCommand, newRefreshGate, type CommandInput } from '../src/commands';
+import { COMMANDS, SLOW_COMMANDS, handleButton, handleCommand, newRefreshGate, type CommandInput } from '../src/commands';
 import { readConfig } from '../src/config';
 
 const MINT = 'FWFxnxR1Esvv6Ebcntr357ri1mucV5FiKTG1kEiBpump';
@@ -25,7 +25,7 @@ function harness() {
 
 describe('commands', () => {
   it('registers every command for servers only, the admin ones for managers', () => {
-    expect(COMMANDS.map((c) => c.name)).toEqual(['ca', 'trending', 'track', 'minbuy', 'untrack', 'buybot', 'calls', 'launches', 'graduations', 'help']);
+    expect(COMMANDS.map((c) => c.name)).toEqual(['ca', 'trending', 'track', 'minbuy', 'untrack', 'buybot', 'calls', 'quote', 'safety', 'holders', 'app', 'launches', 'graduations', 'help']);
     expect(COMMANDS.every((c) => c.dm_permission === false)).toBe(true);
     expect(COMMANDS.filter((c) => c.default_member_permissions).map((c) => c.name)).toEqual(['track', 'minbuy', 'untrack', 'launches', 'graduations']);
     for (const command of COMMANDS) expect(command.description.length).toBeLessThanOrEqual(100);
@@ -135,6 +135,25 @@ describe('commands', () => {
     expect((await h.store.get(GUILD))!.buyBot).toBeNull();
     expect(h.text(await h.run('buybot'))).toContain('No token is tracked here');
     expect(h.text(await h.run('nope'))).toContain('Unknown command');
+  });
+});
+
+describe("the chain's tools", () => {
+  it('quotes a buy for everyone to see, and says a failure only to the asker', async () => {
+    const h = harness();
+    h.list();
+    const tools = { tools: ['launchpad_quote', 'token_safety'], run: async (name: string, args: Record<string, unknown>) => { if (name === 'token_safety') throw Object.assign(new Error('That address is not a token mint.'), { code: 'NOT_A_TOKEN' }); return { venue: 'pumpfun', side: 'buy', inAmount: args.amountIn, outAmount: '12000000000000', minOutAmount: '11640000000000', slippageBps: 300, venueFeeLamports: '5000000', priceImpactBps: 120 }; } };
+    const deps = { source: h.feed, store: h.store, links: h.links, changed: () => undefined, tools };
+    const run = (name: string, over: Partial<CommandInput>) => handleCommand({ name, guildId: GUILD, guildName: 'Server', channelId: '111', userId: '7', canManage: false, ...over }, deps);
+    const quote = await run('quote', { address: MINT, amount: 0.5 });
+    expect(quote.ephemeral).toBe(false);
+    expect(h.text(quote)).toContain('💱 **Quote: 0.5 SOL → ZOP** · on pump.fun');
+    expect(quote.payload.components?.[0]?.components[0]).toMatchObject({ label: 'Chart' });
+    const refused = await run('safety', { address: MINT });
+    expect(refused.ephemeral).toBe(true);
+    expect(h.text(refused)).toContain('That address is not a token mint.');
+    expect(h.text(await run('holders', { address: MINT }))).toContain('not available for this chain');
+    expect(SLOW_COMMANDS.has('quote')).toBe(true);
   });
 });
 

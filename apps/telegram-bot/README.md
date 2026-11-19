@@ -37,6 +37,10 @@ With Redis between them, the feed and any number of bots run as separate process
 | `/untrack` | Admins | Turn the buy bot off |
 | `/buybot` | Anyone | The buy bot's settings, and whether trades of the token are coming in |
 | `/calls` | Anyone | The best calls in this group in the last 7 days |
+| `/quote <address> <amount>` | Anyone | What a buy for that much SOL gets: the amount, the least at 3% slippage, the price impact and the fee |
+| `/safety <address>` | Anyone | A safety grade read from the chain, check by check; a check that could not run never counts as a pass |
+| `/holders <address>` | Anyone | The five largest holders (pools left out), and the groups of linked wallets |
+| `/app <transaction>` | Anyone | The terminal, bot or wallet app that placed a trade, with the evidence; or "unknown" |
 | `/launches on [market cap] [launchpad]` | Admins | Post tokens younger than an hour the first time they reach a market cap (default $20K), from one launchpad or all; `/launches off` stops it, `/launches` shows the alerts |
 | `/graduations on`, `/graduations off` | Admins | Post tokens that finish their bonding curve |
 | `/help` | Anyone | What the bot does |
@@ -53,6 +57,7 @@ Admin commands are checked with Telegram's `getChatMember`. They are not trusted
 | `FEED_STREAM_KEY` | `stream:market:solana` | The feed's stream |
 | `STORE_PATH` | `./data/telegram.json` | The file the groups' settings are kept in |
 | `SNAPSHOT_PATH` | `./data/feed-snapshot.json` | Where the tokens the bot knows are kept across restarts (saved every five minutes and at shutdown, read at start when less than a day old); `off` for none |
+| `SOLANA_RPC_URL` | — | A Solana RPC endpoint; with it `/quote`, `/safety`, `/holders` and `/app` read the chain through the toolkit's own read-only tools (`@soltoolkit/mcp` 0.2 or later). Without it those commands say so. A holder map needs an endpoint that serves `getTokenLargestAccounts` (the public one refuses it) |
 | `BOT_BUTTONS` | `Explorer` → Solscan | Buttons under cards and buy posts: `Label|https://…{address}`, comma separated, at most five |
 | `LINK_ROW` | `EXP` → Solscan, `DS` → DexScreener, `X` → an X search | The short links inside a card: `CODE|https://…{address}`, comma separated, at most ten, codes up to 12 characters; `off` for none |
 | `HOLDER_MAP_URL` | the soltoolkit Live site | The card's 🫧 holder map link, `https://…{address}`; `off` leaves it out |
@@ -71,6 +76,7 @@ A missing or malformed setting stops the bot at start and says which one.
 - **Calls.** The first card of a token in a group (asked with `/ca` or a pasted address) notes who called it and the market cap then. Later cards credit them ("🏆 ana @ 10K · 4.0x · 2d"), and `/calls` ranks the last week's calls by how far they went. Names are printed as text, never as mentions. At most 300 calls are kept per group, for 30 days.
 - **Alerts.** At most one launch alert and one graduation alert a minute per group; an alert that could not go out within three minutes is dropped. A token is posted at most once per group. A dev-sold warning goes out at once, for the token the buy bot tracks.
 - **Restarts.** The bot saves the tokens it knows and reads them back at start, so a card works for a token listed before the restart. Window figures and trades are not saved; they come back from the feed.
+- **Chain reads.** `/quote`, `/safety`, `/holders` and `/app` ask the same read-only tools the MCP server gives AI agents. A chat asks at most six a minute and the same thing once in 30 seconds; nothing is signed or sent, and a quote says so.
 - **Markup.** Messages are MarkdownV2 with every outside text escaped. If Telegram refuses the markup, the message is sent again as plain text.
 - **Groups that change.** When a group becomes a supergroup, its settings move to the new id. When the bot is removed, its buy bot stops.
 - **Dollar figures** come from the feed. Give the feed a SOL price, or buys have no dollar value and none is posted.
@@ -88,7 +94,7 @@ A missing or malformed setting stops the bot at start and says which one.
 pnpm --filter @soltoolkit/telegram-bot test
 ```
 
-20 tests run the bot against a fake Telegram that records every API call. The bot was not run against the real Telegram API in this repository's tests; that needs your own bot token.
+23 tests run the bot against a fake Telegram that records every API call. The bot was not run against the real Telegram API in this repository's tests; that needs your own bot token.
 
 ## Licence
 

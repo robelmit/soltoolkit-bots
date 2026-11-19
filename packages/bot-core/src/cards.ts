@@ -9,6 +9,7 @@ import { callMultiple, fmtMultiple } from './calls';
 import { DASH, ago, fmtNum, fmtPct, fmtPrice, fmtShort, fmtSol, fmtTokenAmount, fmtUsd, shortAddr } from './format';
 import { holderMapUrl, rowFor, tokenUrl, txUrl, walletUrl, type LinkTemplates } from './links';
 import type { Line, Span } from './rich';
+import { fmtUnits, type QuoteView } from './tool-cards';
 import type { BuyBotConfig, DataSource, FeedTrade, TokenView, WindowFigures } from './types';
 
 /** The chain this kit's cards name. */
@@ -291,3 +292,54 @@ export function buyPostCard(post: BuyPost, links: LinkTemplates): Line[] {
     ['💎 MC ', v(money(latest.mc)), ' · Price ', v(fmtPrice(latest.price))],
   ];
 }
+
+/** The native coin's base units in one whole coin. */
+export const NATIVE_DECIMALS = 9;
+
+/**
+ * How much a `/quote` puts in, from what somebody typed (`0.5`, `1`), in the native coin's base units; null when it
+ * is not an amount from 0.001 to 1,000.
+ */
+export function quoteAmountIn(typed: string, _token: { readonly quote?: string | null; readonly quoteDecimals?: number | null } | null = null): { readonly units: string; readonly symbol: string; readonly decimals: number } | null {
+  const amount = Number(typed.replace(/,/g, ''));
+  if (!Number.isFinite(amount) || amount < 0.001 || amount > 1_000) return null;
+  return { units: BigInt(Math.round(amount * 10 ** NATIVE_DECIMALS)).toString(), symbol: CHAIN.native, decimals: NATIVE_DECIMALS };
+}
+
+/** The quote tool's answer (`launchpad_quote`) as a card's view. */
+export function quoteViewOf(result: unknown, token: Pick<TokenView, 'symbol' | 'decimals'> | null): QuoteView {
+  const r = result as { venue?: string; side?: 'buy' | 'sell'; inAmount?: string; outAmount?: string; minOutAmount?: string; slippageBps?: number; venueFeeLamports?: string; priceImpactBps?: number | null };
+  const buy = r.side !== 'sell';
+  const tokenDecimals = typeof token?.decimals === 'number' && Number.isInteger(token.decimals) ? token.decimals : null;
+  const symbol = token?.symbol ?? 'tokens';
+  return {
+    side: buy ? 'buy' : 'sell',
+    venue: launchpadLabel(r.venue ?? null),
+    amountIn: r.inAmount ?? '0',
+    inSymbol: buy ? CHAIN.native : symbol,
+    inDecimals: buy ? NATIVE_DECIMALS : tokenDecimals,
+    amountOut: r.outAmount ?? '0',
+    minOut: r.minOutAmount ?? '0',
+    outSymbol: buy ? symbol : CHAIN.native,
+    outDecimals: buy ? tokenDecimals : NATIVE_DECIMALS,
+    slippageBps: r.slippageBps ?? 300,
+    fee: r.venueFeeLamports ? `${fmtUnits(r.venueFeeLamports, NATIVE_DECIMALS)} ${CHAIN.native}` : null,
+    impactBps: typeof r.priceImpactBps === 'number' ? r.priceImpactBps : null,
+  };
+}
+
+/** The `/quote` call for this chain's tools: its name and arguments. */
+export const quoteToolCall = (address: string, amountIn: string): { readonly name: string; readonly args: Record<string, unknown> } => ({ name: 'launchpad_quote', args: { mint: address, side: 'buy', amountIn } });
+
+/** Whether `/quote` needs the feed to know the token first (to know the coin it trades in). Solana's buys are in SOL. */
+export const QUOTE_NEEDS_FEED = false;
+
+/** The commands that need a chain tool, and the tool each needs: a bot lists only the ones its tools offer. */
+export const TOOL_COMMANDS: Readonly<Record<string, string>> = { quote: 'launchpad_quote', safety: 'token_safety', holders: 'holder_map', app: 'identify_trading_app' };
+
+/** The commands a bot offers: every command, less the tool commands its tools do not have (all of them without tools). */
+export const offeredCommands = <T extends { readonly command?: string; readonly name?: string }>(commands: readonly T[], tools: { readonly tools: readonly string[] } | null): T[] =>
+  commands.filter((c) => {
+    const needs = TOOL_COMMANDS[c.command ?? c.name ?? ''];
+    return !needs || (tools?.tools.includes(needs) ?? false);
+  });

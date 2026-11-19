@@ -4,6 +4,8 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+pnpmfileChecksum: sha256-BpgccgCdD9pzoxjb/LXa7ybi7boOWciqRcAqe+0+4LM=
+
 importers:
 
   .:
@@ -47,6 +49,9 @@ importers:
       '@soltoolkit/bot-core':
         specifier: workspace:^
         version: link:../../packages/bot-core
+      '@soltoolkit/mcp':
+        specifier: link:C:\Users\TnyKwv09wt\soltoolkit-repos\soltoolkit-agents\packages\mcp
+        version: link:../../../soltoolkit-agents/packages/mcp
       discord.js:
         specifier: ^14.27.0
         version: 14.28.1
@@ -72,6 +77,9 @@ importers:
       '@soltoolkit/bot-core':
         specifier: workspace:^
         version: link:../../packages/bot-core
+      '@soltoolkit/mcp':
+        specifier: link:C:\Users\TnyKwv09wt\soltoolkit-repos\soltoolkit-agents\packages\mcp
+        version: link:../../../soltoolkit-agents/packages/mcp
       grammy:
         specifier: ^1.46.0
         version: 1.46.0

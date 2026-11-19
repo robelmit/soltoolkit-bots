@@ -10,7 +10,7 @@
  * the feed ends it prints the trending list and stops.
  */
 
-import { BuyBotEngine, DEFAULT_MIN_BUY_USD, FeedState, MemoryStore, buyOf, buyPostCard, detectAddress, linkTemplates, parseUsd, readJsonl, toPlain, tokenCard, trendingCard, withTokenFacts } from '@soltoolkit/bot-core';
+import { BuyBotEngine, DEFAULT_MIN_BUY_USD, FeedState, MemoryStore, buyOf, buyPostCard, detectAddress, linkTemplates, parseUsd, readJsonl, toAnsi, toText, tokenCard, trendingCard, withTokenFacts, type Line } from '@soltoolkit/bot-core';
 
 const [addressArg, minArg] = process.argv.slice(2).filter((arg) => arg !== '--');
 const address = addressArg ? detectAddress(addressArg) : null;
@@ -21,7 +21,8 @@ if (minUsd === null) throw new Error(`"${minArg}" is not a dollar amount`);
 const links = linkTemplates();
 const feed = new FeedState();
 const store = new MemoryStore();
-const print = (text: string): void => console.log(`${text}\n`);
+// Bold figures and underlined link words in a terminal; plain text when piped on.
+const print = (lines: readonly Line[]): void => console.log(`${process.stdout.isTTY ? toAnsi(lines) : toText(lines)}\n`);
 
 // One "group" with a buy bot for the token asked for. A recorded feed is replayed in an instant, so the gap between
 // posts is switched off here; a real bot keeps the default ten seconds.
@@ -29,7 +30,7 @@ const engine = new BuyBotEngine({
   store,
   gapMs: 0,
   post: async (_community, post) => {
-    print(toPlain(buyPostCard(await withTokenFacts(post, feed), links)));
+    print(buyPostCard(await withTokenFacts(post, feed), links));
     return 'sent';
   },
 });
@@ -41,7 +42,7 @@ feed.onTrade((trade) => {
   const buy = buyOf(trade);
   if (!buy || buy.usd < minUsd) return;
   counts.buys += 1;
-  void feed.token(trade.address).then((token) => print(toPlain(buyPostCard({ config: { address: trade.address, symbol: token?.symbol ?? null, decimals: token?.decimals ?? null, minUsd, setBy: null, setAt: 0 }, buys: [buy], windowMs: 1_000 }, links))));
+  void feed.token(trade.address).then((token) => print(buyPostCard({ config: { address: trade.address, symbol: token?.symbol ?? null, decimals: token?.decimals ?? null, minUsd, setBy: null, setAt: 0 }, buys: [buy], windowMs: 1_000 }, links)));
 });
 
 if (address) {
@@ -53,7 +54,7 @@ const result = await readJsonl(process.stdin, (event) => {
   feed.apply(event);
   if (event.type === 'token_upsert' && !address) {
     counts.listed += 1;
-    void feed.token(event.token.address).then((token) => token && print(toPlain(tokenCard(token, links, event.ts))));
+    void feed.token(event.token.address).then((token) => token && print(tokenCard(token, links, event.ts)));
   }
   if (address && event.type === 'market_trade') {
     // A real bot skips buys older than a minute (a backlog is not news). A recorded feed is all old trades, so here
@@ -64,5 +65,5 @@ const result = await readJsonl(process.stdin, (event) => {
 });
 
 await engine.flush();
-print(toPlain(trendingCard(await feed.trending(5), links)));
+print(trendingCard(await feed.trending(5), links));
 console.error(`read ${result.events} events from ${result.lines} lines; ${feed.getStats().tokens} tokens, ${feed.getStats().trades} trades${address ? `; ${engine.getStats().posts} buy posts` : `; ${counts.listed} cards, ${counts.buys} buys printed`}`);

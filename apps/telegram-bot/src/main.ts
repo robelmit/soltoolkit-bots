@@ -4,7 +4,7 @@
  * Telegram for updates. Stops cleanly on SIGINT and SIGTERM.
  */
 
-import { FeedState, JsonFileStore, keepFeedSnapshot, loadFeedSnapshot, readJsonl, readRedisStream, type Logger } from '@soltoolkit/bot-core';
+import { FeedState, JsonFileStore, keepFeedSnapshot, loadFeedSnapshot, offeredCommands, readJsonl, readRedisStream, toolsFromModule, type ChainTools, type Logger } from '@soltoolkit/bot-core';
 import { COMMANDS, createBot } from './bot';
 import { readConfig } from './config';
 
@@ -20,7 +20,15 @@ async function main(): Promise<void> {
   const store = await JsonFileStore.open(config.storePath);
   const feed = new FeedState();
   if (config.snapshotPath) log.info('tokens taken back from the last run', { tokens: await loadFeedSnapshot(feed, config.snapshotPath).catch(() => 0) });
-  const { bot, engine, alerts } = createBot({ token: config.token, source: feed, store, links: config.links, log, poweredBy: config.poweredBy, cardImage: config.cardImage });
+  // The chain's tools come from the MCP package, loaded only when an endpoint is set.
+  let tools: ChainTools | null = null;
+  if (config.rpcUrl) {
+    const loaded = toolsFromModule(await import('@soltoolkit/mcp'), { rpcUrl: config.rpcUrl, feed });
+    tools = loaded.tools;
+    if (loaded.reason) log.warn(`/quote, /safety, /holders and /app are off: ${loaded.reason}`);
+    else log.info('chain tools on', { tools: tools?.tools.length ?? 0 });
+  }
+  const { bot, engine, alerts } = createBot({ token: config.token, source: feed, store, links: config.links, log, poweredBy: config.poweredBy, cardImage: config.cardImage, tools });
   feed.onTrade(engine.onTrade);
   feed.onToken(alerts.onToken);
   feed.onTrade(alerts.onTrade);
@@ -52,7 +60,7 @@ async function main(): Promise<void> {
 
   void engine.run(stop.signal);
   void alerts.run(stop.signal);
-  await bot.api.setMyCommands([...COMMANDS]).catch((error: unknown) => log.warn('the command menu could not be set', { error: error instanceof Error ? error.message : String(error) }));
+  await bot.api.setMyCommands(offeredCommands(COMMANDS, tools)).catch((error: unknown) => log.warn('the command menu could not be set', { error: error instanceof Error ? error.message : String(error) }));
   await bot.start({
     // callback_query carries the Refresh button's presses.
     allowed_updates: ['message', 'my_chat_member', 'callback_query'],
